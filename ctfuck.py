@@ -202,10 +202,7 @@ class CTFuck:
         return False
     
     def setup_output_dir(self):
-        if not self.output_dir.exists():
-            self.output_dir.mkdir(parents=True)
-            console.print(f"[bold green]✓[/bold green] Created output directory: {self.output_dir}")
-        return self.output_dir
+        pass
     
     def deep_analysis(self):
         console.print(Panel(
@@ -213,16 +210,12 @@ class CTFuck:
             border_style="magenta"
         ))
         
-        self.setup_output_dir()
-        
         self.run_exiftool()
         self.run_binwalk()
         self.run_steghide()
         self.run_outguess()
         self.run_foremost()
         self.run_zsteg_deep()
-        
-        self.scan_output_for_flags()
     
     def run_exiftool(self):
         if not self.tool_status['exiftool']:
@@ -236,10 +229,6 @@ class CTFuck:
         )
         
         if code == 0:
-            output_file = self.output_dir / "exiftool_output.txt"
-            output_file.write_text(stdout, errors='ignore')
-            console.print(f"[green]✓[/green] Saved to {output_file}")
-            
             flags = self.search_flags_from_outputs(stdout, stderr)
             if flags:
                 console.print(f"[bold green]🎯 Found {len(flags)} flag(s) in metadata[/bold green]")
@@ -252,21 +241,16 @@ class CTFuck:
         
         console.print("\n[bold cyan]═══ Binwalk ═══[/bold cyan]")
         
-        binwalk_dir = self.output_dir / "binwalk_extracted"
-        binwalk_dir.mkdir(exist_ok=True)
-        
         stdout, stderr, code = self.run_command(
-            ['binwalk', '-e', '-C', str(binwalk_dir), str(self.file_path)],
-            "Extracting embedded files"
+            ['binwalk', str(self.file_path)],
+            "Scanning for embedded files"
         )
         
         if code == 0:
-            console.print(f"[green]✓[/green] Extraction completed")
-            
-            if list(binwalk_dir.iterdir()):
-                console.print(f"[green]✓[/green] Files extracted to {binwalk_dir}")
-            else:
-                console.print("[yellow]⊘[/yellow] No embedded files")
+            flags = self.search_flags_from_outputs(stdout, stderr)
+            if flags:
+                console.print(f"[bold green]🎯 Found {len(flags)} flag(s) in binwalk output[/bold green]")
+                self.found_flags.extend(flags)
     
     def run_steghide(self):
         if not self.tool_status['steghide']:
@@ -279,25 +263,16 @@ class CTFuck:
         
         console.print("\n[bold cyan]═══ Steghide ═══[/bold cyan]")
         
-        output_file = self.output_dir / f"steghide_extracted_{self.file_path.stem}.txt"
-        
         stdout, stderr, code = self.run_command(
-            f'steghide extract -sf "{self.file_path}" -xf "{output_file}" -p "" -f',
-            "Extracting (no password)",
+            f'steghide info "{self.file_path}" -p ""',
+            "Checking steghide info",
             shell=True
         )
         
-        if code == 0 and output_file.exists():
-            console.print(f"[bold green]✓[/bold green] Extraction successful")
-            console.print(f"[green]✓[/green] Saved to {output_file}")
-            
-            content = output_file.read_text(errors='ignore')
-            flags = self.search_flags_from_outputs(content, stderr)
-            if flags:
-                console.print(f"[bold green]🎯 Found {len(flags)} flag(s)[/bold green]")
-                self.found_flags.extend(flags)
-        else:
-            console.print("[yellow]⊘[/yellow] No data extracted (password required?)")
+        flags = self.search_flags_from_outputs(stdout, stderr)
+        if flags:
+            console.print(f"[bold green]🎯 Found {len(flags)} flag(s)[/bold green]")
+            self.found_flags.extend(flags)
 
     def run_outguess(self):
         if not self.tool_status['outguess']:
@@ -310,23 +285,15 @@ class CTFuck:
 
         console.print("\n[bold cyan]═══ Outguess ═══[/bold cyan]")
 
-        output_file = self.output_dir / f"outguess_extracted_{self.file_path.stem}.bin"
         stdout, stderr, code = self.run_command(
-            ['outguess', '-r', str(self.file_path), str(output_file)],
-            "Extracting with outguess"
+            ['outguess', '-r', str(self.file_path), '/dev/stdout'],
+            "Scanning with outguess"
         )
 
-        if code == 0 and output_file.exists() and output_file.stat().st_size > 0:
-            console.print(f"[bold green]✓[/bold green] Extraction successful")
-            console.print(f"[green]✓[/green] Saved to {output_file}")
-
-            content = output_file.read_bytes().decode('utf-8', errors='ignore')
-            flags = self.search_flags_from_outputs(content, stderr)
-            if flags:
-                console.print(f"[bold green]🎯 Found {len(flags)} flag(s)[/bold green]")
-                self.found_flags.extend(flags)
-        else:
-            console.print("[yellow]⊘[/yellow] No data extracted by outguess")
+        flags = self.search_flags_from_outputs(stdout, stderr)
+        if flags:
+            console.print(f"[bold green]🎯 Found {len(flags)} flag(s)[/bold green]")
+            self.found_flags.extend(flags)
     
     def run_foremost(self):
         if not self.tool_status['foremost']:
@@ -334,25 +301,7 @@ class CTFuck:
             return
         
         console.print("\n[bold cyan]═══ Foremost ═══[/bold cyan]")
-        
-        foremost_dir = self.output_dir / "foremost_carved"
-        foremost_dir.mkdir(exist_ok=True)
-        
-        stdout, stderr, code = self.run_command(
-            ['foremost', '-i', str(self.file_path), '-o', str(foremost_dir)],
-            "Carving files"
-        )
-        
-        if code == 0:
-            console.print(f"[green]✓[/green] Carving completed")
-            
-            carved_files = list(foremost_dir.rglob('*'))
-            file_count = len([f for f in carved_files if f.is_file()])
-            
-            if file_count > 0:
-                console.print(f"[green]✓[/green] Carved {file_count} file(s) to {foremost_dir}")
-            else:
-                console.print("[yellow]⊘[/yellow] No files carved")
+        console.print("[yellow]⊘[/yellow] Foremost skipped (no file saving mode)")
     
     def run_zsteg_deep(self):
         if not self.tool_status['zsteg']:
@@ -371,28 +320,13 @@ class CTFuck:
         )
         
         if code == 0:
-            output_file = self.output_dir / "zsteg_deep_output.txt"
-            output_file.write_text(stdout, errors='ignore')
-            console.print(f"[green]✓[/green] Saved to {output_file}")
-            
             flags = self.search_flags_from_outputs(stdout, stderr)
             if flags:
                 console.print(f"[bold green]🎯 Found {len(flags)} flag(s)[/bold green]")
                 self.found_flags.extend(flags)
     
     def scan_output_for_flags(self):
-        console.print("\n[bold cyan]═══ Scanning Output Files ═══[/bold cyan]")
-        
-        for file_path in self.output_dir.rglob('*'):
-            if file_path.is_file():
-                try:
-                    content = file_path.read_bytes().decode('utf-8', errors='ignore')
-                    flags = self.search_flags(content)
-                    if flags:
-                        console.print(f"[bold green]🎯 Found {len(flags)} flag(s) in {file_path.name}[/bold green]")
-                        self.found_flags.extend(flags)
-                except Exception:
-                    pass
+        pass
     
     def show_results(self):
         console.print("\n")
@@ -416,7 +350,6 @@ class CTFuck:
         else:
             console.print("[yellow]⊘ No flags found[/yellow]")
         
-        console.print(f"\n[cyan]Output:[/cyan] [bold]{self.output_dir}[/bold]")
         console.print()
     
     def run(self):
