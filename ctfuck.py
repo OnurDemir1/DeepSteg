@@ -2,14 +2,12 @@
 
 import argparse
 import subprocess
-import os
 import re
 import shutil
 from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.prompt import Confirm
 from rich import box
 
@@ -33,6 +31,7 @@ class ToolChecker:
         'exiftool': 'libimage-exiftool-perl',
         'binwalk': 'binwalk',
         'steghide': 'steghide',
+        'outguess': 'outguess',
         'foremost': 'foremost'
     }
     
@@ -50,8 +49,8 @@ class ToolChecker:
 class CTFuck:
     def __init__(self, file_path, flag_format, output_dir=None, skip_fast=False, skip_deep=False):
         self.file_path = Path(file_path)
-        self.flag_format = flag_format
-        self.flag_pattern = re.compile(f"{re.escape(flag_format)}[^}}]*}}")
+        self.flag_format = flag_format.strip()
+        self.flag_patterns = self._build_flag_patterns(self.flag_format)
         self.output_dir = Path(output_dir) if output_dir else Path(f"ctfuck_output_{self.file_path.stem}")
         self.found_flags = []
         self.tool_status = ToolChecker.check_all_tools()
@@ -61,6 +60,22 @@ class CTFuck:
         if not self.file_path.exists():
             console.print(f"[bold red]✗ Error:[/bold red] File not found: {file_path}")
             exit(1)
+
+    def _build_flag_patterns(self, flag_format):
+        patterns = []
+
+        escaped_prefix = re.escape(flag_format)
+        patterns.append(re.compile(rf"{escaped_prefix}[^\r\n\t ]{{0,300}}}}"))
+        patterns.append(re.compile(rf"{escaped_prefix}.{{0,300}}?}}", re.DOTALL))
+
+        regex_like_tokens = (".*", ".+", "[", "(", "\\d", "\\w", "\\s", "|")
+        if any(token in flag_format for token in regex_like_tokens):
+            try:
+                patterns.append(re.compile(flag_format))
+            except re.error:
+                pass
+
+        return patterns
     
     def show_banner(self):
         console.print(Panel(
@@ -107,6 +122,7 @@ class CTFuck:
                 shell=shell,
                 capture_output=True,
                 text=True,
+                errors='ignore',
                 timeout=60
             )
             return result.stdout, result.stderr, result.returncode
@@ -118,8 +134,19 @@ class CTFuck:
             return "", str(e), -1
     
     def search_flags(self, text):
-        matches = self.flag_pattern.findall(text)
-        return list(set(matches))
+        found = set()
+        for pattern in self.flag_patterns:
+            for match in pattern.findall(text):
+                if isinstance(match, tuple):
+                    match = "".join(match)
+                cleaned = re.sub(r"[\r\n\t]+", "", match).strip()
+                if cleaned:
+                    found.add(cleaned)
+        return list(found)
+
+    def search_flags_from_outputs(self, stdout, stderr):
+        combined = f"{stdout}\n{stderr}"
+        return self.search_flags(combined)
     
     def fast_scan(self):
         console.print(Panel(
@@ -134,11 +161,10 @@ class CTFuck:
                 ['strings', str(self.file_path)],
                 "Running strings"
             )
-            if code == 0:
-                flags = self.search_flags(stdout)
-                if flags:
-                    flags_found.extend(flags)
-                    console.print(f"[bold green]✓[/bold green] Found {len(flags)} flag(s) with strings")
+            flags = self.search_flags_from_outputs(stdout, stderr)
+            if flags:
+                flags_found.extend(flags)
+                console.print(f"[bold green]✓[/bold green] Found {len(flags)} flag(s) with strings")
         else:
             console.print("[yellow]⊘[/yellow] strings not available")
         
@@ -147,11 +173,10 @@ class CTFuck:
                 ['zsteg', '-a', str(self.file_path)],
                 "Running zsteg"
             )
-            if code == 0:
-                flags = self.search_flags(stdout)
-                if flags:
-                    flags_found.extend(flags)
-                    console.print(f"[bold green]✓[/bold green] Found {len(flags)} flag(s) with zsteg")
+            flags = self.search_flags_from_outputs(stdout, stderr)
+            if flags:
+                flags_found.extend(flags)
+                console.print(f"[bold green]✓[/bold green] Found {len(flags)} flag(s) with zsteg")
         else:
             if not self.tool_status['zsteg']:
                 console.print("[yellow]⊘[/yellow] zsteg not available")
@@ -193,6 +218,7 @@ class CTFuck:
         self.run_exiftool()
         self.run_binwalk()
         self.run_steghide()
+        self.run_outguess()
         self.run_foremost()
         self.run_zsteg_deep()
         
@@ -211,10 +237,10 @@ class CTFuck:
         
         if code == 0:
             output_file = self.output_dir / "exiftool_output.txt"
-            output_file.write_text(stdout)
+            output_file.write_text(stdout, errors='ignore')
             console.print(f"[green]✓[/green] Saved to {output_file}")
             
-            flags = self.search_flags(stdout)
+            flags = self.search_flags_from_outputs(stdout, stderr)
             if flags:
                 console.print(f"[bold green]🎯 Found {len(flags)} flag(s) in metadata[/bold green]")
                 self.found_flags.extend(flags)
@@ -266,12 +292,41 @@ class CTFuck:
             console.print(f"[green]✓[/green] Saved to {output_file}")
             
             content = output_file.read_text(errors='ignore')
-            flags = self.search_flags(content)
+            flags = self.search_flags_from_outputs(content, stderr)
             if flags:
                 console.print(f"[bold green]🎯 Found {len(flags)} flag(s)[/bold green]")
                 self.found_flags.extend(flags)
         else:
             console.print("[yellow]⊘[/yellow] No data extracted (password required?)")
+
+    def run_outguess(self):
+        if not self.tool_status['outguess']:
+            console.print("[yellow]⊘[/yellow] outguess not available")
+            return
+
+        if self.file_path.suffix.lower() not in ['.jpg', '.jpeg']:
+            console.print("[yellow]⊘[/yellow] File type not supported by outguess")
+            return
+
+        console.print("\n[bold cyan]═══ Outguess ═══[/bold cyan]")
+
+        output_file = self.output_dir / f"outguess_extracted_{self.file_path.stem}.bin"
+        stdout, stderr, code = self.run_command(
+            ['outguess', '-r', str(self.file_path), str(output_file)],
+            "Extracting with outguess"
+        )
+
+        if code == 0 and output_file.exists() and output_file.stat().st_size > 0:
+            console.print(f"[bold green]✓[/bold green] Extraction successful")
+            console.print(f"[green]✓[/green] Saved to {output_file}")
+
+            content = output_file.read_bytes().decode('utf-8', errors='ignore')
+            flags = self.search_flags_from_outputs(content, stderr)
+            if flags:
+                console.print(f"[bold green]🎯 Found {len(flags)} flag(s)[/bold green]")
+                self.found_flags.extend(flags)
+        else:
+            console.print("[yellow]⊘[/yellow] No data extracted by outguess")
     
     def run_foremost(self):
         if not self.tool_status['foremost']:
@@ -317,10 +372,10 @@ class CTFuck:
         
         if code == 0:
             output_file = self.output_dir / "zsteg_deep_output.txt"
-            output_file.write_text(stdout)
+            output_file.write_text(stdout, errors='ignore')
             console.print(f"[green]✓[/green] Saved to {output_file}")
             
-            flags = self.search_flags(stdout)
+            flags = self.search_flags_from_outputs(stdout, stderr)
             if flags:
                 console.print(f"[bold green]🎯 Found {len(flags)} flag(s)[/bold green]")
                 self.found_flags.extend(flags)
@@ -331,12 +386,12 @@ class CTFuck:
         for file_path in self.output_dir.rglob('*'):
             if file_path.is_file():
                 try:
-                    content = file_path.read_text(errors='ignore')
+                    content = file_path.read_bytes().decode('utf-8', errors='ignore')
                     flags = self.search_flags(content)
                     if flags:
                         console.print(f"[bold green]🎯 Found {len(flags)} flag(s) in {file_path.name}[/bold green]")
                         self.found_flags.extend(flags)
-                except:
+                except Exception:
                     pass
     
     def show_results(self):

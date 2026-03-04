@@ -37,7 +37,7 @@ ctfuck challenge.png -f "flag{" --skip-fast
 ## What it does
 
 1. Fast scan: `strings` and `zsteg`
-2. Deep analysis: `exiftool`, `binwalk`, `steghide`, `foremost`, `zsteg`
+2. Deep analysis: `exiftool`, `binwalk`, `zsteg`, `steghide`, `outguess`, `foremost`
 3. Scans all generated files for matching flags
 
 Output is saved under `ctfuck_output_<filename>/` unless `-o` is provided.
