@@ -14,22 +14,7 @@ This is the only supported install flow. It installs Python dependencies and reg
 
 ## Install missing external tools
 
-If CTFuck prints messages like `⊘ zsteg not available`, install missing tools with your distro package manager.
-
-### Debian / Ubuntu / Kali
-
-```bash
-sudo apt update
-sudo apt install -y binutils libimage-exiftool-perl binwalk steghide outguess foremost ruby
-sudo gem install zsteg
-```
-
-### Arch Linux
-
-```bash
-sudo pacman -Syu --needed binutils perl-image-exiftool binwalk steghide outguess foremost ruby
-sudo gem install zsteg
-```
+If CTFuck prints messages like `⊘ zsteg not available`, verify which tools are currently available in your environment.
 
 ### Verify tools
 
