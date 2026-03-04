@@ -47,11 +47,10 @@ class ToolChecker:
         return status
 
 class CTFuck:
-    def __init__(self, file_path, flag_format, output_dir=None, skip_fast=False, skip_deep=False):
+    def __init__(self, file_path, flag_format, skip_fast=False, skip_deep=False):
         self.file_path = Path(file_path)
         self.flag_format = flag_format.strip()
         self.flag_patterns = self._build_flag_patterns(self.flag_format)
-        self.output_dir = Path(output_dir) if output_dir else Path(f"ctfuck_output_{self.file_path.stem}")
         self.found_flags = []
         self.tool_status = ToolChecker.check_all_tools()
         self.skip_fast = skip_fast
@@ -90,7 +89,6 @@ class CTFuck:
         
         table.add_row("Target File", str(self.file_path))
         table.add_row("Flag Format", self.flag_format)
-        table.add_row("Output Directory", str(self.output_dir))
         
         console.print(table)
         console.print()
@@ -201,8 +199,6 @@ class CTFuck:
         console.print()
         return False
     
-    def setup_output_dir(self):
-        pass
     
     def deep_analysis(self):
         console.print(Panel(
@@ -378,7 +374,7 @@ def main():
         epilog="""
 Examples:
   ctfuck image.png -f "FLAG{"
-  ctfuck image.png -f "CTF{" -o /tmp/output
+  ctfuck image.png -f "CTF{"
   ctfuck image.png -f "flag{" --skip-fast
         """
     )
@@ -392,11 +388,6 @@ Examples:
         '-f', '--flag-format',
         required=True,
         help='Flag format to search (e.g., "FLAG{", "CTF{")'
-    )
-
-    parser.add_argument(
-        '-o', '--output-dir',
-        help='Output directory (default: ctfuck_output_<filename>)'
     )
 
     parser.add_argument(
@@ -417,7 +408,6 @@ Examples:
         ctfuck = CTFuck(
             file_path=args.file,
             flag_format=args.flag_format,
-            output_dir=args.output_dir,
             skip_fast=args.skip_fast,
             skip_deep=args.skip_deep,
         )
