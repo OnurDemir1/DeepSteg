@@ -39,6 +39,14 @@ sudo ./install.sh
 
 This installs dependencies and creates a global `ctfuck` command.
 
+### Clone and Manual Setup
+```bash
+git clone https://github.com/OnurDemir1/CTFuck.git
+cd CTFuck
+pip install -r requirements.txt
+chmod +x ctfuck.py
+```
+
 ### Manual Install
 ```bash
 pip install -r requirements.txt
