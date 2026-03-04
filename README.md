@@ -10,24 +10,7 @@ cd CTFuck
 sudo ./install.sh
 ```
 
-This is the only supported install flow. It installs Python dependencies and registers a global `ctfuck` command.
-
-## Install missing external tools
-
-If CTFuck prints messages like `⊘ zsteg not available`, verify which tools are currently available in your environment.
-
-### Verify tools
-
-```bash
-which strings exiftool binwalk steghide outguess foremost zsteg
-```
-
-If `zsteg` is installed but still not found, add Ruby gem bin path to `PATH`:
-
-```bash
-echo "export PATH=\"\$PATH:\$(ruby -e 'puts Gem.bindir')\"" >> ~/.bashrc
-source ~/.bashrc
-```
+This installs Python dependencies, auto-installs missing external tools (strings, exiftool, binwalk, steghide, outguess, foremost, zsteg), and registers a global `ctfuck` command.
 
 ## Usage
 
@@ -39,7 +22,6 @@ Required:
 - `-f, --flag-format` Flag prefix to search (example: `FLAG{`, `CTF{`)
 
 Optional:
-- `-o, --output-dir` Custom output directory
 - `--skip-fast` Skip fast scan phase
 - `--skip-deep` Skip deep analysis phase
 
@@ -47,17 +29,15 @@ Optional:
 
 ```bash
 ctfuck test.png -f "FLAG{"
-ctfuck image.jpg -f "CTF{" -o ./output
+ctfuck image.jpg -f "CTF{"
 ctfuck challenge.png -f "flag{" --skip-fast
 ```
 
 ## What it does
 
 1. Fast scan: `strings` and `zsteg`
-2. Deep analysis: `exiftool`, `binwalk`, `zsteg`, `steghide`, `outguess`, `foremost`
-3. Scans all generated files for matching flags
-
-Output is saved under `ctfuck_output_<filename>/` unless `-o` is provided.
+2. Deep analysis: `exiftool`, `binwalk`, `zsteg`, `steghide`, `outguess`
+3. Scans tool outputs in-memory for flags (no files saved to disk)
 
 ## Notes
 
