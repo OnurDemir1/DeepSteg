@@ -36,8 +36,8 @@ if [[ ${#MISSING_TOOLS[@]} -gt 0 ]]; then
         exiftool) apt install -y libimage-exiftool-perl ;;
         binwalk) apt install -y binwalk ;;
         steghide) apt install -y steghide ;;
-        outguess) apt install -y outguess ;;
-        foremost) apt install -y foremost ;;
+        outguess) apt install -y outguess 2>/dev/null || warn "outguess not available in repos, skipping" ;;
+        foremost) apt install -y foremost 2>/dev/null || warn "foremost not available in repos, skipping" ;;
         zsteg) 
           apt install -y ruby ruby-dev 2>/dev/null || true
           gem install zsteg 2>/dev/null || true
