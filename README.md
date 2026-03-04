@@ -12,6 +12,38 @@ sudo ./install.sh
 
 This is the only supported install flow. It installs Python dependencies and registers a global `ctfuck` command.
 
+## Install missing external tools
+
+If CTFuck prints messages like `⊘ zsteg not available`, install missing tools with your distro package manager.
+
+### Debian / Ubuntu / Kali
+
+```bash
+sudo apt update
+sudo apt install -y binutils libimage-exiftool-perl binwalk steghide outguess foremost ruby
+sudo gem install zsteg
+```
+
+### Arch Linux
+
+```bash
+sudo pacman -Syu --needed binutils perl-image-exiftool binwalk steghide outguess foremost ruby
+sudo gem install zsteg
+```
+
+### Verify tools
+
+```bash
+which strings exiftool binwalk steghide outguess foremost zsteg
+```
+
+If `zsteg` is installed but still not found, add Ruby gem bin path to `PATH`:
+
+```bash
+echo "export PATH=\"\$PATH:\$(ruby -e 'puts Gem.bindir')\"" >> ~/.bashrc
+source ~/.bashrc
+```
+
 ## Usage
 
 ```bash
