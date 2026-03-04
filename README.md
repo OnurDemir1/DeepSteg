@@ -2,7 +2,7 @@
 
 Steganography automation CLI for CTF challenges.
 
-## Installation (single method)
+## Installation 
 
 ```bash
 git clone https://github.com/OnurDemir1/CTFuck.git
