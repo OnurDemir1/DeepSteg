@@ -37,12 +37,8 @@ ctfuck challenge.png -f "flag{" --skip-fast
 
 1. Fast scan: `strings` and `zsteg`
 2. Deep analysis: `exiftool`, `binwalk`, `zsteg`, `steghide`, `outguess`
-3. Scans tool outputs in-memory for flags (no files saved to disk)
+3. Scans tool outputs in-memory for flags 
 
-## Notes
-
-- Built for Linux environments.
-- If some external tools are missing, CTFuck skips them and continues.
 
 ## Disclaimer
 
