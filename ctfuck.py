@@ -4,6 +4,11 @@ import argparse
 import subprocess
 import re
 import shutil
+import base64
+import binascii
+import tempfile
+import os
+import math
 from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
@@ -52,6 +57,7 @@ class CTFuck:
         self.flag_format = flag_format.strip()
         self.flag_patterns = self._build_flag_patterns(self.flag_format)
         self.found_flags = []
+        self.interesting_strings = []
         self.tool_status = ToolChecker.check_all_tools()
         self.skip_fast = skip_fast
         self.skip_deep = skip_deep
@@ -131,20 +137,123 @@ class CTFuck:
             console.print(f"[bold red]✗[/bold red] Error: {str(e)}")
             return "", str(e), -1
     
-    def search_flags(self, text):
-        found = set()
+    def search_flags(self, text, source="unknown"):
+        found = []
         for pattern in self.flag_patterns:
             for match in pattern.findall(text):
                 if isinstance(match, tuple):
                     match = "".join(match)
                 cleaned = re.sub(r"[\r\n\t]+", "", match).strip()
                 if cleaned:
-                    found.add(cleaned)
-        return list(found)
+                    found.append((cleaned, source))
+        return found
 
-    def search_flags_from_outputs(self, stdout, stderr):
+    def calculate_entropy(self, data: bytes):
+        if not data:
+            return 0
+        entropy = 0
+        for x in range(256):
+            p_x = data.count(x) / len(data)
+            if p_x > 0:
+                entropy += - p_x * math.log(p_x, 2)
+        return entropy
+
+    def find_encoded_flags(self, text, source="unknown"):
+        # Look for Base64 strings (length >= 16 to reduce false positives)
+        b64_pattern = re.compile(r'(?:[A-Za-z0-9+/]{4}){4,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?')
+        # Look for Hex strings (length >= 16)
+        hex_pattern = re.compile(r'\b(?:[0-9a-fA-F]{2}){8,}\b')
+
+        found = []
+        interesting = []
+
+        # Check Base64
+        for b64_match in b64_pattern.findall(text):
+            if len(b64_match) % 4 != 0:
+                continue
+            try:
+                decoded = base64.b64decode(b64_match).decode('utf-8', errors='ignore')
+                flags = self.search_flags(decoded, source)
+                if flags:
+                    found.extend(flags)
+                elif any(keyword in decoded.lower() for keyword in ['flag', 'key', 'password', 'secret', 'admin']):
+                    # It's an interesting decoded string
+                    is_printable = all(32 <= ord(c) < 127 for c in decoded)
+                    if is_printable and len(decoded) > 3:
+                        interesting.append((f"[Base64] {b64_match} -> {decoded}", source))
+            except Exception:
+                pass
+
+        # Check Hex
+        for hex_match in hex_pattern.findall(text):
+            try:
+                decoded = binascii.unhexlify(hex_match).decode('utf-8', errors='ignore')
+                flags = self.search_flags(decoded, source)
+                if flags:
+                    found.extend(flags)
+                elif any(keyword in decoded.lower() for keyword in ['flag', 'key', 'password', 'secret', 'admin']):
+                    is_printable = all(32 <= ord(c) < 127 for c in decoded)
+                    if is_printable and len(decoded) > 3:
+                        interesting.append((f"[Hex] {hex_match} -> {decoded}", source))
+            except Exception:
+                pass
+
+        return found, interesting
+
+    def _scan_extracted_files(self, extract_dir, tool_name):
+        flags_found = []
+        # strings tool status check
+        has_strings = self.tool_status.get('strings', False)
+        for root, dirs, files in os.walk(extract_dir):
+            for file in files:
+                file_path = os.path.join(root, file)
+                file_source = f"{tool_name} -> {file}"
+                
+                # Entropy Check
+                try:
+                    with open(file_path, 'rb') as f:
+                        raw_data = f.read()
+                        entropy = self.calculate_entropy(raw_data)
+                        if entropy > 7.5:
+                            self.interesting_strings.append((f"High Entropy Data ({entropy:.2f}) - Encrypted/Compressed?", file_source))
+                except Exception:
+                    pass
+
+                if has_strings:
+                    stdout, stderr, code = self.run_command(
+                        ['strings', str(file_path)],
+                        f"Scanning extracted file: {file}"
+                    )
+                    flags = self.search_flags_from_outputs(stdout, stderr, file_source)
+                    if flags:
+                        flags_found.extend(flags)
+                else:
+                    # Fallback to direct read if no strings tool
+                    try:
+                        with open(file_path, 'rb') as f:
+                            content = f.read().decode('utf-8', errors='ignore')
+                            flags = self.search_flags(content, file_source)
+                            encoded_flags, interesting = self.find_encoded_flags(content, file_source)
+                            flags.extend(encoded_flags)
+                            if interesting:
+                                self.interesting_strings.extend(interesting)
+                            if flags:
+                                flags_found.extend(flags)
+                    except Exception:
+                        pass
+        return flags_found
+
+    def search_flags_from_outputs(self, stdout, stderr, source="unknown"):
         combined = f"{stdout}\n{stderr}"
-        return self.search_flags(combined)
+        flags = self.search_flags(combined, source)
+        
+        encoded_flags, interesting = self.find_encoded_flags(combined, source)
+        flags.extend(encoded_flags)
+        
+        if interesting:
+            self.interesting_strings.extend(interesting)
+            
+        return flags
     
     def fast_scan(self):
         console.print(Panel(
@@ -159,7 +268,7 @@ class CTFuck:
                 ['strings', str(self.file_path)],
                 "Running strings"
             )
-            flags = self.search_flags_from_outputs(stdout, stderr)
+            flags = self.search_flags_from_outputs(stdout, stderr, "fast scan (strings)")
             if flags:
                 flags_found.extend(flags)
                 console.print(f"[bold green]✓[/bold green] Found {len(flags)} flag(s) with strings")
@@ -171,7 +280,7 @@ class CTFuck:
                 ['zsteg', '-a', str(self.file_path)],
                 "Running zsteg"
             )
-            flags = self.search_flags_from_outputs(stdout, stderr)
+            flags = self.search_flags_from_outputs(stdout, stderr, "fast scan (zsteg)")
             if flags:
                 flags_found.extend(flags)
                 console.print(f"[bold green]✓[/bold green] Found {len(flags)} flag(s) with zsteg")
@@ -184,7 +293,7 @@ class CTFuck:
         if flags_found:
             console.print()
             console.print(Panel(
-                "\n".join([f"[bold green]{flag}[/bold green]" for flag in flags_found]),
+                "\n".join([f"[bold green]{flag[0]}[/bold green] (Source: {flag[1]})" for flag in flags_found]),
                 title="[bold green]🎯 FLAGS FOUND[/bold green]",
                 border_style="green",
                 box=box.DOUBLE
@@ -225,7 +334,7 @@ class CTFuck:
         )
         
         if code == 0:
-            flags = self.search_flags_from_outputs(stdout, stderr)
+            flags = self.search_flags_from_outputs(stdout, stderr, "exiftool metadata")
             if flags:
                 console.print(f"[bold green]🎯 Found {len(flags)} flag(s) in metadata[/bold green]")
                 self.found_flags.extend(flags)
@@ -237,16 +346,21 @@ class CTFuck:
         
         console.print("\n[bold cyan]═══ Binwalk ═══[/bold cyan]")
         
-        stdout, stderr, code = self.run_command(
-            ['binwalk', str(self.file_path)],
-            "Scanning for embedded files"
-        )
-        
-        if code == 0:
-            flags = self.search_flags_from_outputs(stdout, stderr)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stdout, stderr, code = self.run_command(
+                ['binwalk', '-e', '-M', '--matryoshka-limit=3', '-C', temp_dir, str(self.file_path)],
+                "Scanning and recursively extracting embedded files (Depth 3)"
+            )
+            
+            flags = self.search_flags_from_outputs(stdout, stderr, "binwalk mapping")
             if flags:
                 console.print(f"[bold green]🎯 Found {len(flags)} flag(s) in binwalk output[/bold green]")
                 self.found_flags.extend(flags)
+                
+            extracted_flags = self._scan_extracted_files(temp_dir, "binwalk")
+            if extracted_flags:
+                console.print(f"[bold green]🎯 Found {len(extracted_flags)} flag(s) inside binwalk extracted files[/bold green]")
+                self.found_flags.extend(extracted_flags)
     
     def run_steghide(self):
         if not self.tool_status['steghide']:
@@ -265,7 +379,7 @@ class CTFuck:
             shell=True
         )
         
-        flags = self.search_flags_from_outputs(stdout, stderr)
+        flags = self.search_flags_from_outputs(stdout, stderr, "steghide info")
         if flags:
             console.print(f"[bold green]🎯 Found {len(flags)} flag(s)[/bold green]")
             self.found_flags.extend(flags)
@@ -286,7 +400,7 @@ class CTFuck:
             "Scanning with outguess"
         )
 
-        flags = self.search_flags_from_outputs(stdout, stderr)
+        flags = self.search_flags_from_outputs(stdout, stderr, "outguess output")
         if flags:
             console.print(f"[bold green]🎯 Found {len(flags)} flag(s)[/bold green]")
             self.found_flags.extend(flags)
@@ -297,7 +411,17 @@ class CTFuck:
             return
         
         console.print("\n[bold cyan]═══ Foremost ═══[/bold cyan]")
-        console.print("[yellow]⊘[/yellow] Foremost skipped (no file saving mode)")
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stdout, stderr, code = self.run_command(
+                ['foremost', '-i', str(self.file_path), '-o', temp_dir],
+                "Extracting files with foremost"
+            )
+            
+            extracted_flags = self._scan_extracted_files(temp_dir, "foremost")
+            if extracted_flags:
+                console.print(f"[bold green]🎯 Found {len(extracted_flags)} flag(s) inside foremost extracted files[/bold green]")
+                self.found_flags.extend(extracted_flags)
     
     def run_zsteg_deep(self):
         if not self.tool_status['zsteg']:
@@ -316,7 +440,7 @@ class CTFuck:
         )
         
         if code == 0:
-            flags = self.search_flags_from_outputs(stdout, stderr)
+            flags = self.search_flags_from_outputs(stdout, stderr, "zsteg deep analysis")
             if flags:
                 console.print(f"[bold green]🎯 Found {len(flags)} flag(s)[/bold green]")
                 self.found_flags.extend(flags)
@@ -332,19 +456,38 @@ class CTFuck:
         ))
         
         unique_flags = list(set(self.found_flags))
+        unique_interesting = list(set(self.interesting_strings))
         
         if unique_flags:
             table = Table(title="[bold green]🎯 FLAGS FOUND[/bold green]", box=box.DOUBLE, border_style="green")
             table.add_column("#", style="cyan", width=5)
             table.add_column("Flag", style="bold green")
+            table.add_column("Source", style="dim cyan")
             
-            for idx, flag in enumerate(unique_flags, 1):
-                table.add_row(str(idx), flag)
+            for idx, item in enumerate(unique_flags, 1):
+                flag_text = item[0] if isinstance(item, tuple) else item
+                source_text = item[1] if isinstance(item, tuple) else "unknown"
+                table.add_row(str(idx), flag_text, source_text)
             
             console.print(table)
             console.print(f"\n[bold green]Total: {len(unique_flags)} unique flag(s)[/bold green]")
         else:
             console.print("[yellow]⊘ No flags found[/yellow]")
+            
+        if unique_interesting:
+            console.print()
+            table = Table(title="[bold yellow]🔍 INTERESTING DATA (Decoded & High Entropy)[/bold yellow]", box=box.ROUNDED, border_style="yellow")
+            table.add_column("#", style="cyan", width=5)
+            table.add_column("Details", style="yellow")
+            table.add_column("Source", style="dim cyan")
+            
+            for idx, item in enumerate(unique_interesting, 1):
+                data_text = item[0] if isinstance(item, tuple) else item
+                source_text = item[1] if isinstance(item, tuple) else "unknown"
+                table.add_row(str(idx), data_text, source_text)
+                
+            console.print(table)
+            console.print(f"\n[bold yellow]Total: {len(unique_interesting)} interesting item(s)[/bold yellow]")
         
         console.print()
     
