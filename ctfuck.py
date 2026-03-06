@@ -60,6 +60,8 @@ class CTFuck:
         self.flag_patterns = self._build_flag_patterns(self.flag_format)
         self.found_flags = []
         self.interesting_strings = []
+        self.suspicious_patterns = []
+        self.metadata_findings = []
         self.tool_status = ToolChecker.check_all_tools()
         self.skip_fast = skip_fast
         self.skip_deep = skip_deep
@@ -192,10 +194,8 @@ class CTFuck:
                         found.extend(recursive_flags)
                         interesting.extend(recursive_interesting)
                         
-                        if any(keyword in decoded.lower() for keyword in ['flag', 'key', 'password', 'secret', 'admin', 'ctf']):
-                            is_printable = all(32 <= ord(c) < 127 or c in '\n\r\t' for c in decoded)
-                            if is_printable and len(decoded) > 3:
-                                interesting.append((f"[Base64] {b64_match[:50]}... -> {decoded[:100]}", source))
+                        # Check for interesting content
+                        self._check_interesting_content(decoded, f"[Base64] {b64_match[:50]}...", source, interesting)
                 except Exception:
                     pass
         
@@ -217,10 +217,7 @@ class CTFuck:
                         flags = self.search_flags(decoded, source)
                         if flags:
                             found.extend(flags)
-                        if any(keyword in decoded.lower() for keyword in ['flag', 'key', 'password', 'secret', 'admin', 'ctf']):
-                            is_printable = all(32 <= ord(c) < 127 or c in '\n\r\t' for c in decoded)
-                            if is_printable and len(decoded) > 3:
-                                interesting.append((f"[Hex] {hex_match[:50]}... -> {decoded[:100]}", source))
+                        self._check_interesting_content(decoded, f"[Hex] {hex_match[:50]}...", source, interesting)
                 except Exception:
                     pass
         
@@ -233,8 +230,7 @@ class CTFuck:
                     flags = self.search_flags(decoded, source)
                     if flags:
                         found.extend(flags)
-                    if any(keyword in decoded.lower() for keyword in ['flag', 'key', 'password', 'secret', 'admin', 'ctf']):
-                        interesting.append((f"[URL] {url_match[:50]}... -> {decoded[:100]}", source))
+                    self._check_interesting_content(decoded, f"[URL] {url_match[:50]}...", source, interesting)
             except Exception:
                 pass
         
@@ -260,10 +256,7 @@ class CTFuck:
                     flags = self.search_flags(decoded, source)
                     if flags:
                         found.extend(flags)
-                    is_printable = all(32 <= ord(c) < 127 or c in '\n\r\t' for c in decoded)
-                    if is_printable and len(decoded) > 3:
-                        if any(keyword in decoded.lower() for keyword in ['flag', 'key', 'password', 'secret', 'admin', 'ctf']):
-                            interesting.append((f"[Binary] {binary_match[:50]}... -> {decoded[:100]}", source))
+                    self._check_interesting_content(decoded, f"[Binary] {binary_match[:50]}...", source, interesting)
             except Exception:
                 pass
         
@@ -276,8 +269,7 @@ class CTFuck:
                     flags = self.search_flags(decoded, source)
                     if flags:
                         found.extend(flags)
-                    if any(keyword in decoded.lower() for keyword in ['flag', 'key', 'password', 'secret', 'admin', 'ctf']):
-                        interesting.append((f"[Octal] {octal_match[:50]}... -> {decoded[:100]}", source))
+                    self._check_interesting_content(decoded, f"[Octal] {octal_match[:50]}...", source, interesting)
             except Exception:
                 pass
         
@@ -291,10 +283,7 @@ class CTFuck:
                     flags = self.search_flags(decoded, source)
                     if flags:
                         found.extend(flags)
-                    is_printable = all(32 <= ord(c) < 127 or c in '\n\r\t' for c in decoded)
-                    if is_printable:
-                        if any(keyword in decoded.lower() for keyword in ['flag', 'key', 'password', 'secret', 'admin', 'ctf']):
-                            interesting.append((f"[ASCII] {ascii_match[:50]}... -> {decoded[:100]}", source))
+                    self._check_interesting_content(decoded, f"[ASCII] {ascii_match[:50]}...", source, interesting)
             except Exception:
                 pass
         
@@ -309,10 +298,7 @@ class CTFuck:
                     flags = self.search_flags(decoded, source)
                     if flags:
                         found.extend(flags)
-                    if any(keyword in decoded.lower() for keyword in ['flag', 'key', 'password', 'secret', 'admin', 'ctf']):
-                        is_printable = all(32 <= ord(c) < 127 or c in '\n\r\t' for c in decoded)
-                        if is_printable and len(decoded) > 3:
-                            interesting.append((f"[Base32] {b32_match[:50]}... -> {decoded[:100]}", source))
+                    self._check_interesting_content(decoded, f"[Base32] {b32_match[:50]}...", source, interesting)
             except Exception:
                 pass
         
@@ -323,7 +309,91 @@ class CTFuck:
             for flag in reversed_flags:
                 found.append((flag[0], f"{source} (Reversed)"))
         
+        # Check for suspicious patterns in original text
+        self._detect_suspicious_patterns(text, source)
+        
         return found, interesting
+    
+    def _check_interesting_content(self, decoded, encoding_info, source, interesting_list):
+        """Enhanced interesting content detection with multiple categories"""
+        if not decoded or len(decoded) < 3:
+            return
+        
+        decoded_lower = decoded.lower()
+        is_printable = all(32 <= ord(c) < 127 or c in '\n\r\t' for c in decoded)
+        
+        if not is_printable:
+            return
+        
+        # Category 1: CTF Keywords
+        ctf_keywords = ['flag', 'ctf', 'challenge', 'solve', 'answer']
+        if any(kw in decoded_lower for kw in ctf_keywords):
+            interesting_list.append((f"{encoding_info} -> {decoded[:150]}", f"{source} [CTF Keyword]"))
+            return
+        
+        # Category 2: Credentials/Secrets
+        secret_keywords = ['password', 'passwd', 'pwd', 'secret', 'key', 'token', 'api', 'auth']
+        if any(kw in decoded_lower for kw in secret_keywords):
+            interesting_list.append((f"{encoding_info} -> {decoded[:150]}", f"{source} [Credentials]"))
+            return
+        
+        # Category 3: Admin/Access
+        admin_keywords = ['admin', 'root', 'user', 'login', 'username']
+        if any(kw in decoded_lower for kw in admin_keywords):
+            interesting_list.append((f"{encoding_info} -> {decoded[:150]}", f"{source} [Access Info]"))
+            return
+        
+        # Category 4: URLs and Paths
+        if any(pattern in decoded_lower for pattern in ['http://', 'https://', 'ftp://', '://']):
+            interesting_list.append((f"{encoding_info} -> {decoded[:150]}", f"{source} [URL]"))
+            return
+        
+        if decoded.startswith('/') or ':\\\\' in decoded or re.search(r'[A-Z]:\\\\', decoded):
+            interesting_list.append((f"{encoding_info} -> {decoded[:150]}", f"{source} [File Path]"))
+            return
+        
+        # Category 5: Code/Commands
+        code_patterns = ['import ', 'function ', 'def ', 'class ', 'echo ', 'cat ', 'ls ', 'grep ']
+        if any(pattern in decoded_lower for pattern in code_patterns):
+            interesting_list.append((f"{encoding_info} -> {decoded[:150]}", f"{source} [Code/Command]"))
+            return
+        
+        # Category 6: Long readable strings (might be hidden messages)
+        if len(decoded) > 20 and decoded.count(' ') > 2:
+            words = decoded.split()
+            if len(words) > 3:
+                interesting_list.append((f"{encoding_info} -> {decoded[:150]}", f"{source} [Long Text]"))
+    
+    def _detect_suspicious_patterns(self, text, source):
+        """Detect suspicious patterns that might indicate hidden data"""
+        # Detect repeated patterns
+        repeated_pattern = re.compile(r'(\b\w{4,}\b)(?:\s+\1){2,}')
+        for match in repeated_pattern.finditer(text):
+            self.suspicious_patterns.append((f"Repeated word: '{match.group(1)}'", source))
+        
+        # Detect unusual character frequencies
+        if len(text) > 100:
+            char_freq = {}
+            for char in text:
+                if char.isalnum():
+                    char_freq[char] = char_freq.get(char, 0) + 1
+            
+            # Check if any character appears more than 30% of the time
+            total_alnum = sum(char_freq.values())
+            if total_alnum > 0:
+                for char, count in char_freq.items():
+                    if count / total_alnum > 0.3:
+                        self.suspicious_patterns.append((f"High frequency character: '{char}' ({count/total_alnum*100:.1f}%)", source))
+                        break
+        
+        # Detect potential steganography markers
+        stego_markers = ['BEGIN', 'END', 'HIDDEN', 'EMBEDDED', 'STEALTH', 'COVERT']
+        for marker in stego_markers:
+            if marker in text.upper():
+                context_start = max(0, text.upper().find(marker) - 20)
+                context_end = min(len(text), text.upper().find(marker) + len(marker) + 20)
+                context = text[context_start:context_end]
+                self.suspicious_patterns.append((f"Steganography marker '{marker}': {context}", source))
 
     def _scan_extracted_files(self, extract_dir, tool_name, max_depth=3, current_depth=0):
         flags_found = []
@@ -350,10 +420,14 @@ class CTFuck:
                     with open(file_path, 'rb') as f:
                         raw_data = f.read()
                     
-                    # Entropy Check
+                    # Entropy Check with better categorization
                     entropy = self.calculate_entropy(raw_data)
-                    if entropy > 7.5:
-                        self.interesting_strings.append((f"High Entropy Data ({entropy:.2f}) - Encrypted/Compressed?", file_source))
+                    if entropy > 7.8:
+                        self.interesting_strings.append((f"Very High Entropy ({entropy:.2f}) - Likely Encrypted", file_source))
+                    elif entropy > 7.0:
+                        self.interesting_strings.append((f"High Entropy ({entropy:.2f}) - Compressed/Encrypted?", file_source))
+                    elif entropy < 3.0 and file_size > 1024:
+                        self.interesting_strings.append((f"Very Low Entropy ({entropy:.2f}) - Repetitive Data", file_source))
                     
                     # Check if it's a nested archive/image that binwalk can extract
                     file_ext = os.path.splitext(file_path)[1].lower()
@@ -411,6 +485,23 @@ class CTFuck:
         
         return flags_found
 
+    def _extract_metadata_info(self, metadata_output, source):
+        """Extract interesting information from metadata"""
+        interesting_fields = [
+            'comment', 'description', 'author', 'creator', 'software', 
+            'user comment', 'artist', 'copyright', 'keywords', 'subject'
+        ]
+        
+        for line in metadata_output.split('\n'):
+            line_lower = line.lower()
+            for field in interesting_fields:
+                if field in line_lower and ':' in line:
+                    parts = line.split(':', 1)
+                    if len(parts) == 2:
+                        value = parts[1].strip()
+                        if value and len(value) > 3:
+                            self.metadata_findings.append((f"{parts[0].strip()}: {value}", source))
+    
     def search_flags_from_outputs(self, stdout, stderr, source="unknown"):
         combined = f"{stdout}\n{stderr}"
         flags = self.search_flags(combined, source)
@@ -513,6 +604,9 @@ class CTFuck:
             if flags:
                 console.print(f"[bold green]🎯 Found {len(flags)} flag(s) in metadata[/bold green]")
                 self.found_flags.extend(flags)
+            
+            # Extract interesting metadata
+            self._extract_metadata_info(stdout, "exiftool")
     
     def run_binwalk(self):
         if not self.tool_status['binwalk']:
@@ -647,6 +741,22 @@ class CTFuck:
                 seen_interesting.add(data_text)
                 unique_interesting.append(item)
         
+        seen_suspicious = set()
+        unique_suspicious = []
+        for item in self.suspicious_patterns:
+            data_text = item[0] if isinstance(item, tuple) else item
+            if data_text not in seen_suspicious:
+                seen_suspicious.add(data_text)
+                unique_suspicious.append(item)
+        
+        seen_metadata = set()
+        unique_metadata = []
+        for item in self.metadata_findings:
+            data_text = item[0] if isinstance(item, tuple) else item
+            if data_text not in seen_metadata:
+                seen_metadata.add(data_text)
+                unique_metadata.append(item)
+        
         if unique_flags:
             table = Table(title="[bold green]🎯 FLAGS FOUND[/bold green]", box=box.DOUBLE, border_style="green")
             table.add_column("#", style="cyan", width=5)
@@ -677,6 +787,36 @@ class CTFuck:
                 
             console.print(table)
             console.print(f"\n[bold yellow]Total: {len(unique_interesting)} interesting item(s)[/bold yellow]")
+        
+        if unique_suspicious:
+            console.print()
+            table = Table(title="[bold red]⚠️  SUSPICIOUS PATTERNS[/bold red]", box=box.ROUNDED, border_style="red")
+            table.add_column("#", style="cyan", width=5)
+            table.add_column("Pattern", style="red")
+            table.add_column("Source", style="dim cyan")
+            
+            for idx, item in enumerate(unique_suspicious, 1):
+                pattern_text = item[0] if isinstance(item, tuple) else item
+                source_text = item[1] if isinstance(item, tuple) else "unknown"
+                table.add_row(str(idx), pattern_text, source_text)
+            
+            console.print(table)
+            console.print(f"\n[bold red]Total: {len(unique_suspicious)} suspicious pattern(s)[/bold red]")
+        
+        if unique_metadata:
+            console.print()
+            table = Table(title="[bold magenta]📋 METADATA FINDINGS[/bold magenta]", box=box.ROUNDED, border_style="magenta")
+            table.add_column("#", style="cyan", width=5)
+            table.add_column("Field", style="magenta")
+            table.add_column("Source", style="dim cyan")
+            
+            for idx, item in enumerate(unique_metadata, 1):
+                field_text = item[0] if isinstance(item, tuple) else item
+                source_text = item[1] if isinstance(item, tuple) else "unknown"
+                table.add_row(str(idx), field_text, source_text)
+            
+            console.print(table)
+            console.print(f"\n[bold magenta]Total: {len(unique_metadata)} metadata field(s)[/bold magenta]")
         
         console.print()
     
