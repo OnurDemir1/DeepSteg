@@ -589,6 +589,7 @@ class CTFuck:
         if self.file_path.suffix.lower() not in ['.jpg', '.jpeg', '.bmp', '.wav', '.au']:
             return
         
+        # First check if there's embedded data
         stdout, stderr, code = self.run_command(
             f'steghide info "{self.file_path}" -p ""',
             "Checking steghide info",
@@ -599,6 +600,49 @@ class CTFuck:
         if flags:
             console.print(f"[green]✓ steghide: {len(flags)} flag(s)[/green]")
             self.found_flags.extend(flags)
+        
+        # Check if embedded file is detected
+        if 'embedded' in stdout.lower() or 'embedded' in stderr.lower():
+            # Try to extract with common passwords
+            common_passwords = ['', 'password', '123456', 'admin', 'root', 'flag', 'ctf', 'steghide']
+            
+            with tempfile.TemporaryDirectory() as temp_dir:
+                for password in common_passwords:
+                    output_file = os.path.join(temp_dir, 'steghide_extracted.bin')
+                    extract_cmd = f'steghide extract -sf "{self.file_path}" -xf "{output_file}" -p "{password}" -f'
+                    
+                    stdout_ex, stderr_ex, code_ex = self.run_command(
+                        extract_cmd,
+                        f"Trying steghide password: {'(empty)' if not password else password}",
+                        shell=True,
+                        silent=True
+                    )
+                    
+                    if code_ex == 0 and os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+                        console.print(f"[green]✓ steghide extracted with password: {'(empty)' if not password else password}[/green]")
+                        
+                        # Read and scan extracted content
+                        try:
+                            with open(output_file, 'rb') as f:
+                                content = f.read()
+                            
+                            # Try to decode as text
+                            text_content = content.decode('utf-8', errors='ignore')
+                            flags_ex = self.search_flags(text_content, "steghide extracted")
+                            if flags_ex:
+                                console.print(f"[green]✓ steghide extracted: {len(flags_ex)} flag(s)[/green]")
+                                self.found_flags.extend(flags_ex)
+                            
+                            # Also check for encoded flags
+                            encoded_flags, interesting = self.find_encoded_flags(text_content, "steghide extracted")
+                            if encoded_flags:
+                                self.found_flags.extend(encoded_flags)
+                            if interesting:
+                                self.interesting_strings.extend(interesting)
+                        except Exception:
+                            pass
+                        
+                        break
 
     def run_outguess(self):
         if not self.tool_status['outguess']:
