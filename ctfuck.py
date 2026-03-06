@@ -63,6 +63,30 @@ class CTFuck:
             console.print(f"[bold red]✗ Error:[/bold red] File not found: {file_path}")
             exit(1)
 
+    def _get_output_root(self):
+        return self.file_path.parent / f"ctfuck_output_{self.file_path.stem}"
+
+    def _persist_extracted_files(self, source_dir, tool_name):
+        source_path = Path(source_dir)
+        if not source_path.exists():
+            return None
+
+        extracted_files = [path for path in source_path.rglob('*') if path.is_file()]
+        if not extracted_files:
+            return None
+
+        output_root = self._get_output_root()
+        destination_root = output_root / tool_name
+        destination_root.mkdir(parents=True, exist_ok=True)
+
+        for file_path in extracted_files:
+            relative_path = file_path.relative_to(source_path)
+            destination_path = destination_root / relative_path
+            destination_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(file_path, destination_path)
+
+        return destination_root
+
     def _build_flag_patterns(self, flag_format):
         patterns = []
 
@@ -589,7 +613,11 @@ class CTFuck:
             if flags:
                 console.print(f"[green]✓ binwalk: {len(flags)} flag(s)[/green]")
                 self.found_flags.extend(flags)
-                
+
+            saved_path = self._persist_extracted_files(temp_dir, "binwalk")
+            if saved_path:
+                console.print(f"[dim]Saved extracted files: {saved_path}[/dim]")
+
             extracted_flags = self._scan_extracted_files(temp_dir, "binwalk")
             if extracted_flags:
                 console.print(f"[green]✓ binwalk extracted: {len(extracted_flags)} flag(s)[/green]")
@@ -632,6 +660,9 @@ class CTFuck:
                     
                     if code_ex == 0 and os.path.exists(output_file) and os.path.getsize(output_file) > 0:
                         console.print(f"[green]✓ steghide extracted with password: {'(empty)' if not password else password}[/green]")
+                        saved_path = self._persist_extracted_files(temp_dir, "steghide")
+                        if saved_path:
+                            console.print(f"[dim]Saved extracted files: {saved_path}[/dim]")
                         
                         # Read and scan extracted content
                         try:
@@ -684,7 +715,11 @@ class CTFuck:
                 ['foremost', '-i', str(self.file_path), '-o', temp_dir],
                 "Extracting files with foremost"
             )
-            
+
+            saved_path = self._persist_extracted_files(temp_dir, "foremost")
+            if saved_path:
+                console.print(f"[dim]Saved extracted files: {saved_path}[/dim]")
+
             extracted_flags = self._scan_extracted_files(temp_dir, "foremost")
             if extracted_flags:
                 console.print(f"[green]✓ foremost: {len(extracted_flags)} flag(s)[/green]")
