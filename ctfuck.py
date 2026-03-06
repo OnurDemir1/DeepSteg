@@ -306,9 +306,6 @@ class CTFuck:
             for flag in reversed_flags:
                 found.append((flag[0], f"{source} (Reversed)"))
         
-        # Check for suspicious patterns in original text
-        self._detect_suspicious_patterns(text, source)
-        
         return found, interesting
     
     def _check_interesting_content(self, decoded, encoding_info, source, interesting_list):
@@ -411,20 +408,10 @@ class CTFuck:
                     
                     # Skip very large files (> 50MB) to avoid memory issues
                     if file_size > 50 * 1024 * 1024:
-                        self.interesting_strings.append((f"Large file skipped ({file_size / 1024 / 1024:.1f}MB)", file_source))
                         continue
                     
                     with open(file_path, 'rb') as f:
                         raw_data = f.read()
-                    
-                    # Entropy Check with better categorization
-                    entropy = self.calculate_entropy(raw_data)
-                    if entropy > 7.8:
-                        self.interesting_strings.append((f"Very High Entropy ({entropy:.2f}) - Likely Encrypted", file_source))
-                    elif entropy > 7.0:
-                        self.interesting_strings.append((f"High Entropy ({entropy:.2f}) - Compressed/Encrypted?", file_source))
-                    elif entropy < 3.0 and file_size > 1024:
-                        self.interesting_strings.append((f"Very Low Entropy ({entropy:.2f}) - Repetitive Data", file_source))
                     
                     # Check if it's a nested archive/image that binwalk can extract
                     file_ext = os.path.splitext(file_path)[1].lower()
@@ -785,14 +772,20 @@ class CTFuck:
             if data_text not in seen_interesting:
                 seen_interesting.add(data_text)
                 unique_interesting.append(item)
-        
-        seen_suspicious = set()
-        unique_suspicious = []
-        for item in self.suspicious_patterns:
-            data_text = item[0] if isinstance(item, tuple) else item
-            if data_text not in seen_suspicious:
-                seen_suspicious.add(data_text)
-                unique_suspicious.append(item)
+
+        actionable_interesting = []
+        actionable_tags = (
+            "[CTF Keyword]",
+            "[Credentials]",
+            "[Access Info]",
+            "[URL]",
+            "[File Path]",
+            "[Code/Command]",
+        )
+        for item in unique_interesting:
+            source_text = item[1] if isinstance(item, tuple) else "unknown"
+            if any(tag in source_text for tag in actionable_tags):
+                actionable_interesting.append(item)
         
         seen_metadata = set()
         unique_metadata = []
@@ -811,23 +804,14 @@ class CTFuck:
         else:
             console.print("\n[yellow]No flags found[/yellow]")
             
-        if unique_interesting:
-            console.print(f"\n[bold yellow]🔍 Interesting ({len(unique_interesting)}):[/bold yellow]")
-            for item in unique_interesting[:5]:  # Show max 5
+        if actionable_interesting:
+            console.print(f"\n[bold yellow]🔍 Interesting ({len(actionable_interesting)}):[/bold yellow]")
+            for item in actionable_interesting[:5]:
                 data_text = item[0] if isinstance(item, tuple) else item
                 source_text = item[1] if isinstance(item, tuple) else "unknown"
                 console.print(f"  [yellow]•[/yellow] {data_text[:80]}... [dim]({source_text})[/dim]")
-            if len(unique_interesting) > 5:
-                console.print(f"  [dim]... and {len(unique_interesting) - 5} more[/dim]")
-        
-        if unique_suspicious:
-            console.print(f"\n[bold red]⚠️  Suspicious ({len(unique_suspicious)}):[/bold red]")
-            for item in unique_suspicious[:3]:  # Show max 3
-                pattern_text = item[0] if isinstance(item, tuple) else item
-                source_text = item[1] if isinstance(item, tuple) else "unknown"
-                console.print(f"  [red]•[/red] {pattern_text[:80]}... [dim]({source_text})[/dim]")
-            if len(unique_suspicious) > 3:
-                console.print(f"  [dim]... and {len(unique_suspicious) - 3} more[/dim]")
+            if len(actionable_interesting) > 5:
+                console.print(f"  [dim]... and {len(actionable_interesting) - 5} more[/dim]")
         
         if unique_metadata:
             console.print(f"\n[bold magenta]📋 Metadata ({len(unique_metadata)}):[/bold magenta]")
