@@ -9,6 +9,8 @@ import binascii
 import tempfile
 import os
 import math
+import urllib.parse
+import codecs
 from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
@@ -151,96 +153,262 @@ class CTFuck:
     def calculate_entropy(self, data: bytes):
         if not data:
             return 0
+        
+        # Count byte frequencies efficiently
+        byte_counts = [0] * 256
+        for byte in data:
+            byte_counts[byte] += 1
+        
         entropy = 0
-        for x in range(256):
-            p_x = data.count(x) / len(data)
-            if p_x > 0:
+        data_len = len(data)
+        for count in byte_counts:
+            if count > 0:
+                p_x = count / data_len
                 entropy += - p_x * math.log(p_x, 2)
         return entropy
 
     def find_encoded_flags(self, text, source="unknown"):
-        # Look for Base64 strings (length >= 16 to reduce false positives)
-        b64_pattern = re.compile(r'(?:[A-Za-z0-9+/]{4}){4,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?')
-        # Look for Hex strings (length >= 16)
-        hex_pattern = re.compile(r'\b(?:[0-9a-fA-F]{2}){8,}\b')
-
         found = []
         interesting = []
-
-        # Check Base64
-        for b64_match in b64_pattern.findall(text):
-            if len(b64_match) % 4 != 0:
+        
+        # 1. Base64 Detection (multiple patterns)
+        b64_patterns = [
+            re.compile(r'(?:[A-Za-z0-9+/]{4}){4,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?'),
+            re.compile(r'(?:[A-Za-z0-9+/]{4}){2,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)')  # Shorter base64
+        ]
+        
+        for pattern in b64_patterns:
+            for b64_match in pattern.findall(text):
+                if len(b64_match) < 8:  # Too short
+                    continue
+                try:
+                    decoded = base64.b64decode(b64_match).decode('utf-8', errors='ignore')
+                    if decoded.strip():
+                        flags = self.search_flags(decoded, source)
+                        if flags:
+                            found.extend(flags)
+                        # Recursive decode - maybe it's double encoded
+                        recursive_flags, recursive_interesting = self.find_encoded_flags(decoded, source)
+                        found.extend(recursive_flags)
+                        interesting.extend(recursive_interesting)
+                        
+                        if any(keyword in decoded.lower() for keyword in ['flag', 'key', 'password', 'secret', 'admin', 'ctf']):
+                            is_printable = all(32 <= ord(c) < 127 or c in '\n\r\t' for c in decoded)
+                            if is_printable and len(decoded) > 3:
+                                interesting.append((f"[Base64] {b64_match[:50]}... -> {decoded[:100]}", source))
+                except Exception:
+                    pass
+        
+        # 2. Hex Detection
+        hex_patterns = [
+            re.compile(r'\b(?:[0-9a-fA-F]{2}){8,}\b'),  # Standard hex
+            re.compile(r'(?:0x[0-9a-fA-F]{2}\s*){4,}'),  # 0x prefixed
+            re.compile(r'(?:[0-9a-fA-F]{2}\s+){4,}')     # Space separated
+        ]
+        
+        for pattern in hex_patterns:
+            for hex_match in pattern.findall(text):
+                cleaned_hex = re.sub(r'[^0-9a-fA-F]', '', hex_match)
+                if len(cleaned_hex) < 8 or len(cleaned_hex) % 2 != 0:
+                    continue
+                try:
+                    decoded = binascii.unhexlify(cleaned_hex).decode('utf-8', errors='ignore')
+                    if decoded.strip():
+                        flags = self.search_flags(decoded, source)
+                        if flags:
+                            found.extend(flags)
+                        if any(keyword in decoded.lower() for keyword in ['flag', 'key', 'password', 'secret', 'admin', 'ctf']):
+                            is_printable = all(32 <= ord(c) < 127 or c in '\n\r\t' for c in decoded)
+                            if is_printable and len(decoded) > 3:
+                                interesting.append((f"[Hex] {hex_match[:50]}... -> {decoded[:100]}", source))
+                except Exception:
+                    pass
+        
+        # 3. URL Encoding
+        url_pattern = re.compile(r'(?:%[0-9a-fA-F]{2}){3,}')
+        for url_match in url_pattern.findall(text):
+            try:
+                decoded = urllib.parse.unquote(url_match)
+                if decoded != url_match and decoded.strip():
+                    flags = self.search_flags(decoded, source)
+                    if flags:
+                        found.extend(flags)
+                    if any(keyword in decoded.lower() for keyword in ['flag', 'key', 'password', 'secret', 'admin', 'ctf']):
+                        interesting.append((f"[URL] {url_match[:50]}... -> {decoded[:100]}", source))
+            except Exception:
+                pass
+        
+        # 4. ROT13
+        try:
+            rot13_decoded = codecs.decode(text, 'rot_13')
+            if rot13_decoded != text:
+                flags = self.search_flags(rot13_decoded, source)
+                if flags:
+                    for flag in flags:
+                        found.append((flag[0], f"{source} (ROT13)"))
+        except Exception:
+            pass
+        
+        # 5. Binary (01 sequences)
+        binary_pattern = re.compile(r'\b[01]{8,}\b')
+        for binary_match in binary_pattern.findall(text):
+            if len(binary_match) % 8 != 0:
                 continue
             try:
-                decoded = base64.b64decode(b64_match).decode('utf-8', errors='ignore')
-                flags = self.search_flags(decoded, source)
-                if flags:
-                    found.extend(flags)
-                elif any(keyword in decoded.lower() for keyword in ['flag', 'key', 'password', 'secret', 'admin']):
-                    # It's an interesting decoded string
-                    is_printable = all(32 <= ord(c) < 127 for c in decoded)
+                decoded = ''.join(chr(int(binary_match[i:i+8], 2)) for i in range(0, len(binary_match), 8))
+                if decoded.strip():
+                    flags = self.search_flags(decoded, source)
+                    if flags:
+                        found.extend(flags)
+                    is_printable = all(32 <= ord(c) < 127 or c in '\n\r\t' for c in decoded)
                     if is_printable and len(decoded) > 3:
-                        interesting.append((f"[Base64] {b64_match} -> {decoded}", source))
+                        if any(keyword in decoded.lower() for keyword in ['flag', 'key', 'password', 'secret', 'admin', 'ctf']):
+                            interesting.append((f"[Binary] {binary_match[:50]}... -> {decoded[:100]}", source))
             except Exception:
                 pass
-
-        # Check Hex
-        for hex_match in hex_pattern.findall(text):
+        
+        # 6. Octal
+        octal_pattern = re.compile(r'(?:\\[0-7]{3}){3,}')
+        for octal_match in octal_pattern.findall(text):
             try:
-                decoded = binascii.unhexlify(hex_match).decode('utf-8', errors='ignore')
-                flags = self.search_flags(decoded, source)
-                if flags:
-                    found.extend(flags)
-                elif any(keyword in decoded.lower() for keyword in ['flag', 'key', 'password', 'secret', 'admin']):
-                    is_printable = all(32 <= ord(c) < 127 for c in decoded)
-                    if is_printable and len(decoded) > 3:
-                        interesting.append((f"[Hex] {hex_match} -> {decoded}", source))
+                decoded = codecs.decode(octal_match, 'unicode_escape')
+                if decoded.strip():
+                    flags = self.search_flags(decoded, source)
+                    if flags:
+                        found.extend(flags)
+                    if any(keyword in decoded.lower() for keyword in ['flag', 'key', 'password', 'secret', 'admin', 'ctf']):
+                        interesting.append((f"[Octal] {octal_match[:50]}... -> {decoded[:100]}", source))
             except Exception:
                 pass
-
+        
+        # 7. ASCII decimal codes (space or comma separated)
+        ascii_pattern = re.compile(r'\b(?:\d{2,3}[,\s]+){4,}\d{2,3}\b')
+        for ascii_match in ascii_pattern.findall(text):
+            try:
+                numbers = re.findall(r'\d+', ascii_match)
+                decoded = ''.join(chr(int(n)) for n in numbers if 0 <= int(n) <= 127)
+                if decoded.strip() and len(decoded) > 3:
+                    flags = self.search_flags(decoded, source)
+                    if flags:
+                        found.extend(flags)
+                    is_printable = all(32 <= ord(c) < 127 or c in '\n\r\t' for c in decoded)
+                    if is_printable:
+                        if any(keyword in decoded.lower() for keyword in ['flag', 'key', 'password', 'secret', 'admin', 'ctf']):
+                            interesting.append((f"[ASCII] {ascii_match[:50]}... -> {decoded[:100]}", source))
+            except Exception:
+                pass
+        
+        # 8. Base32
+        base32_pattern = re.compile(r'\b[A-Z2-7]{8,}={0,6}\b')
+        for b32_match in base32_pattern.findall(text):
+            if len(b32_match) < 8:
+                continue
+            try:
+                decoded = base64.b32decode(b32_match).decode('utf-8', errors='ignore')
+                if decoded.strip():
+                    flags = self.search_flags(decoded, source)
+                    if flags:
+                        found.extend(flags)
+                    if any(keyword in decoded.lower() for keyword in ['flag', 'key', 'password', 'secret', 'admin', 'ctf']):
+                        is_printable = all(32 <= ord(c) < 127 or c in '\n\r\t' for c in decoded)
+                        if is_printable and len(decoded) > 3:
+                            interesting.append((f"[Base32] {b32_match[:50]}... -> {decoded[:100]}", source))
+            except Exception:
+                pass
+        
+        # 9. Reversed strings (look for common patterns reversed)
+        reversed_text = text[::-1]
+        reversed_flags = self.search_flags(reversed_text, source)
+        if reversed_flags:
+            for flag in reversed_flags:
+                found.append((flag[0], f"{source} (Reversed)"))
+        
         return found, interesting
 
-    def _scan_extracted_files(self, extract_dir, tool_name):
+    def _scan_extracted_files(self, extract_dir, tool_name, max_depth=3, current_depth=0):
         flags_found = []
-        # strings tool status check
         has_strings = self.tool_status.get('strings', False)
+        
+        if current_depth >= max_depth:
+            return flags_found
+        
         for root, dirs, files in os.walk(extract_dir):
             for file in files:
                 file_path = os.path.join(root, file)
-                file_source = f"{tool_name} -> {file}"
+                file_source = f"{tool_name} -> {os.path.relpath(file_path, extract_dir)}"
                 
-                # Entropy Check
                 try:
+                    file_size = os.path.getsize(file_path)
+                    if file_size == 0:
+                        continue
+                    
+                    # Skip very large files (> 50MB) to avoid memory issues
+                    if file_size > 50 * 1024 * 1024:
+                        self.interesting_strings.append((f"Large file skipped ({file_size / 1024 / 1024:.1f}MB)", file_source))
+                        continue
+                    
                     with open(file_path, 'rb') as f:
                         raw_data = f.read()
-                        entropy = self.calculate_entropy(raw_data)
-                        if entropy > 7.5:
-                            self.interesting_strings.append((f"High Entropy Data ({entropy:.2f}) - Encrypted/Compressed?", file_source))
-                except Exception:
-                    pass
-
-                if has_strings:
-                    stdout, stderr, code = self.run_command(
-                        ['strings', str(file_path)],
-                        f"Scanning extracted file: {file}"
-                    )
-                    flags = self.search_flags_from_outputs(stdout, stderr, file_source)
-                    if flags:
-                        flags_found.extend(flags)
-                else:
-                    # Fallback to direct read if no strings tool
-                    try:
-                        with open(file_path, 'rb') as f:
-                            content = f.read().decode('utf-8', errors='ignore')
-                            flags = self.search_flags(content, file_source)
-                            encoded_flags, interesting = self.find_encoded_flags(content, file_source)
-                            flags.extend(encoded_flags)
-                            if interesting:
-                                self.interesting_strings.extend(interesting)
+                    
+                    # Entropy Check
+                    entropy = self.calculate_entropy(raw_data)
+                    if entropy > 7.5:
+                        self.interesting_strings.append((f"High Entropy Data ({entropy:.2f}) - Encrypted/Compressed?", file_source))
+                    
+                    # Check if it's a nested archive/image that binwalk can extract
+                    file_ext = os.path.splitext(file_path)[1].lower()
+                    nested_extractable = file_ext in ['.zip', '.tar', '.gz', '.bz2', '.7z', '.rar', '.png', '.jpg', '.jpeg', '.bmp', '.gif']
+                    
+                    if nested_extractable and self.tool_status.get('binwalk', False) and current_depth < max_depth - 1:
+                        # Try to extract nested files
+                        with tempfile.TemporaryDirectory() as nested_temp:
+                            try:
+                                nested_stdout, nested_stderr, nested_code = self.run_command(
+                                    ['binwalk', '-e', '-C', nested_temp, file_path],
+                                    f"Extracting nested file: {file}"
+                                )
+                                
+                                # Scan the nested extraction
+                                nested_flags = self._scan_extracted_files(nested_temp, f"{tool_name}/{file}", max_depth, current_depth + 1)
+                                if nested_flags:
+                                    flags_found.extend(nested_flags)
+                            except Exception:
+                                pass
+                    
+                    # Scan file content with strings or direct read
+                    if has_strings:
+                        try:
+                            stdout, stderr, code = self.run_command(
+                                ['strings', str(file_path)],
+                                f"Scanning: {os.path.basename(file_path)}"
+                            )
+                            flags = self.search_flags_from_outputs(stdout, stderr, file_source)
                             if flags:
                                 flags_found.extend(flags)
+                        except Exception:
+                            pass
+                    
+                    # Always try direct content read for better encoding detection
+                    try:
+                        content = raw_data.decode('utf-8', errors='ignore')
+                        if content.strip():
+                            # Direct flag search
+                            flags = self.search_flags(content, file_source)
+                            if flags:
+                                flags_found.extend(flags)
+                            
+                            # Encoded flag search
+                            encoded_flags, interesting = self.find_encoded_flags(content, file_source)
+                            if encoded_flags:
+                                flags_found.extend(encoded_flags)
+                            if interesting:
+                                self.interesting_strings.extend(interesting)
                     except Exception:
                         pass
+                    
+                except Exception:
+                    pass
+        
         return flags_found
 
     def search_flags_from_outputs(self, stdout, stderr, source="unknown"):
@@ -288,17 +456,24 @@ class CTFuck:
             if not self.tool_status['zsteg']:
                 console.print("[yellow]⊘[/yellow] zsteg not available")
         
-        flags_found = list(set(flags_found))
+        # Remove duplicates while preserving tuple structure
+        unique_flags = []
+        seen = set()
+        for flag in flags_found:
+            flag_text = flag[0] if isinstance(flag, tuple) else flag
+            if flag_text not in seen:
+                seen.add(flag_text)
+                unique_flags.append(flag)
         
-        if flags_found:
+        if unique_flags:
             console.print()
             console.print(Panel(
-                "\n".join([f"[bold green]{flag[0]}[/bold green] (Source: {flag[1]})" for flag in flags_found]),
+                "\n".join([f"[bold green]{flag[0]}[/bold green] (Source: {flag[1]})" for flag in unique_flags]),
                 title="[bold green]🎯 FLAGS FOUND[/bold green]",
                 border_style="green",
                 box=box.DOUBLE
             ))
-            self.found_flags.extend(flags_found)
+            self.found_flags.extend(unique_flags)
             
             if not Confirm.ask("\n[bold yellow]Continue with deep analysis?[/bold yellow]", default=False):
                 return True
@@ -348,8 +523,8 @@ class CTFuck:
         
         with tempfile.TemporaryDirectory() as temp_dir:
             stdout, stderr, code = self.run_command(
-                ['binwalk', '-e', '-M', '--matryoshka-limit=3', '-C', temp_dir, str(self.file_path)],
-                "Scanning and recursively extracting embedded files (Depth 3)"
+                ['binwalk', '-e', '-C', temp_dir, str(self.file_path)],
+                "Scanning and extracting embedded files"
             )
             
             flags = self.search_flags_from_outputs(stdout, stderr, "binwalk mapping")
@@ -455,8 +630,22 @@ class CTFuck:
             border_style="cyan"
         ))
         
-        unique_flags = list(set(self.found_flags))
-        unique_interesting = list(set(self.interesting_strings))
+        # Remove duplicates while preserving tuple structure
+        seen_flags = set()
+        unique_flags = []
+        for item in self.found_flags:
+            flag_text = item[0] if isinstance(item, tuple) else item
+            if flag_text not in seen_flags:
+                seen_flags.add(flag_text)
+                unique_flags.append(item)
+        
+        seen_interesting = set()
+        unique_interesting = []
+        for item in self.interesting_strings:
+            data_text = item[0] if isinstance(item, tuple) else item
+            if data_text not in seen_interesting:
+                seen_interesting.add(data_text)
+                unique_interesting.append(item)
         
         if unique_flags:
             table = Table(title="[bold green]🎯 FLAGS FOUND[/bold green]", box=box.DOUBLE, border_style="green")
