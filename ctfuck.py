@@ -20,16 +20,7 @@ from rich import box
 
 console = Console()
 
-BANNER = """
-   ██████╗████████╗███████╗██╗   ██╗ ██████╗██╗  ██╗
-  ██╔════╝╚══██╔══╝██╔════╝██║   ██║██╔════╝██║ ██╔╝
-  ██║        ██║   █████╗  ██║   ██║██║     █████╔╝ 
-  ██║        ██║   ██╔══╝  ██║   ██║██║     ██╔═██╗ 
-  ╚██████╗   ██║   ██║     ╚██████╔╝╚██████╗██║  ██╗
-   ╚═════╝   ╚═╝   ╚═╝      ╚═════╝  ╚═════╝╚═╝  ╚═╝
-
-      Steganography Automation Tool for CTF
-"""
+BANNER = "CTFuck - Steganography Automation Tool"
 
 class ToolChecker:
     REQUIRED_TOOLS = {
@@ -87,44 +78,23 @@ class CTFuck:
         return patterns
     
     def show_banner(self):
-        console.print(Panel(
-            f"[bold cyan]{BANNER}[/bold cyan]",
-            border_style="cyan",
-            box=box.DOUBLE
-        ))
-        
-        table = Table(show_header=True, header_style="bold magenta", box=box.ROUNDED)
-        table.add_column("Parameter", style="cyan", width=20)
-        table.add_column("Value", style="yellow")
-        
-        table.add_row("Target File", str(self.file_path))
-        table.add_row("Flag Format", self.flag_format)
-        
-        console.print(table)
-        console.print()
+        console.print(f"\n[bold cyan]{BANNER}[/bold cyan]")
+        console.print(f"[dim]Target:[/dim] {self.file_path} | [dim]Flag:[/dim] {self.flag_format}\n")
     
     def show_tool_status(self):
-        table = Table(title="[bold]Tool Availability[/bold]", box=box.ROUNDED)
-        table.add_column("Tool", style="cyan", width=15)
-        table.add_column("Status", width=10)
-        table.add_column("Package", style="dim")
+        available = [tool for tool, status in self.tool_status.items() if status]
+        missing = [tool for tool, status in self.tool_status.items() if not status]
         
-        for tool, package in ToolChecker.REQUIRED_TOOLS.items():
-            status = "✓" if self.tool_status[tool] else "✗"
-            status_style = "green" if self.tool_status[tool] else "red"
-            table.add_row(tool, f"[{status_style}]{status}[/{status_style}]", package)
-        
-        console.print(table)
+        if available:
+            console.print(f"[dim]Tools:[/dim] [green]{', '.join(available)}[/green]")
+        if missing:
+            console.print(f"[dim]Missing:[/dim] [red]{', '.join(missing)}[/red]")
         console.print()
-        
-        missing_tools = [tool for tool, available in self.tool_status.items() if not available]
-        if missing_tools:
-            console.print(f"[yellow]⚠ Warning:[/yellow] Missing tools. Install for full functionality.")
-            console.print()
     
-    def run_command(self, cmd, description, shell=False):
+    def run_command(self, cmd, description, shell=False, silent=False):
         try:
-            console.print(f"[bold blue]→[/bold blue] {description}...")
+            if not silent:
+                console.print(f"[dim]→ {description}[/dim]")
             result = subprocess.run(
                 cmd,
                 shell=shell,
@@ -135,10 +105,12 @@ class CTFuck:
             )
             return result.stdout, result.stderr, result.returncode
         except subprocess.TimeoutExpired:
-            console.print(f"[bold red]✗[/bold red] Timeout: {description}")
+            if not silent:
+                console.print(f"[red]✗ Timeout: {description}[/red]")
             return "", "Timeout", -1
         except Exception as e:
-            console.print(f"[bold red]✗[/bold red] Error: {str(e)}")
+            if not silent:
+                console.print(f"[red]✗ Error: {str(e)}[/red]")
             return "", str(e), -1
     
     def search_flags(self, text, source="unknown"):
@@ -515,10 +487,7 @@ class CTFuck:
         return flags
     
     def fast_scan(self):
-        console.print(Panel(
-            "[bold yellow]⚡ FAST SCAN - Quick Flag Hunter[/bold yellow]",
-            border_style="yellow"
-        ))
+        console.print("[bold yellow]⚡ Fast Scan[/bold yellow]")
         
         flags_found = []
         
@@ -530,9 +499,7 @@ class CTFuck:
             flags = self.search_flags_from_outputs(stdout, stderr, "fast scan (strings)")
             if flags:
                 flags_found.extend(flags)
-                console.print(f"[bold green]✓[/bold green] Found {len(flags)} flag(s) with strings")
-        else:
-            console.print("[yellow]⊘[/yellow] strings not available")
+                console.print(f"[green]✓ strings: {len(flags)} flag(s)[/green]")
         
         if self.tool_status['zsteg'] and self.file_path.suffix.lower() in ['.png', '.bmp']:
             stdout, stderr, code = self.run_command(
@@ -542,10 +509,7 @@ class CTFuck:
             flags = self.search_flags_from_outputs(stdout, stderr, "fast scan (zsteg)")
             if flags:
                 flags_found.extend(flags)
-                console.print(f"[bold green]✓[/bold green] Found {len(flags)} flag(s) with zsteg")
-        else:
-            if not self.tool_status['zsteg']:
-                console.print("[yellow]⊘[/yellow] zsteg not available")
+                console.print(f"[green]✓ zsteg: {len(flags)} flag(s)[/green]")
         
         # Remove duplicates while preserving tuple structure
         unique_flags = []
@@ -557,29 +521,22 @@ class CTFuck:
                 unique_flags.append(flag)
         
         if unique_flags:
-            console.print()
-            console.print(Panel(
-                "\n".join([f"[bold green]{flag[0]}[/bold green] (Source: {flag[1]})" for flag in unique_flags]),
-                title="[bold green]🎯 FLAGS FOUND[/bold green]",
-                border_style="green",
-                box=box.DOUBLE
-            ))
+            console.print("\n[bold green]🎯 Flags Found:[/bold green]")
+            for flag in unique_flags:
+                console.print(f"  [green]•[/green] {flag[0]} [dim]({flag[1]})[/dim]")
             self.found_flags.extend(unique_flags)
             
-            if not Confirm.ask("\n[bold yellow]Continue with deep analysis?[/bold yellow]", default=False):
+            if not Confirm.ask("\n[yellow]Continue with deep analysis?[/yellow]", default=False):
                 return True
         else:
-            console.print("[yellow]⊘[/yellow] No flags in fast scan. Starting deep analysis...")
+            console.print("[dim]No flags found, starting deep analysis...[/dim]")
         
         console.print()
         return False
     
     
     def deep_analysis(self):
-        console.print(Panel(
-            "[bold magenta]🔍 DEEP ANALYSIS - Full Steganography Scan[/bold magenta]",
-            border_style="magenta"
-        ))
+        console.print("\n[bold magenta]🔍 Deep Analysis[/bold magenta]")
         
         self.run_exiftool()
         self.run_binwalk()
@@ -590,10 +547,7 @@ class CTFuck:
     
     def run_exiftool(self):
         if not self.tool_status['exiftool']:
-            console.print("[yellow]⊘[/yellow] exiftool not available")
             return
-        
-        console.print("\n[bold cyan]═══ ExifTool ═══[/bold cyan]")
         stdout, stderr, code = self.run_command(
             ['exiftool', str(self.file_path)],
             "Extracting metadata"
@@ -602,7 +556,7 @@ class CTFuck:
         if code == 0:
             flags = self.search_flags_from_outputs(stdout, stderr, "exiftool metadata")
             if flags:
-                console.print(f"[bold green]🎯 Found {len(flags)} flag(s) in metadata[/bold green]")
+                console.print(f"[green]✓ exiftool: {len(flags)} flag(s)[/green]")
                 self.found_flags.extend(flags)
             
             # Extract interesting metadata
@@ -610,10 +564,7 @@ class CTFuck:
     
     def run_binwalk(self):
         if not self.tool_status['binwalk']:
-            console.print("[yellow]⊘[/yellow] binwalk not available")
             return
-        
-        console.print("\n[bold cyan]═══ Binwalk ═══[/bold cyan]")
         
         with tempfile.TemporaryDirectory() as temp_dir:
             stdout, stderr, code = self.run_command(
@@ -623,24 +574,20 @@ class CTFuck:
             
             flags = self.search_flags_from_outputs(stdout, stderr, "binwalk mapping")
             if flags:
-                console.print(f"[bold green]🎯 Found {len(flags)} flag(s) in binwalk output[/bold green]")
+                console.print(f"[green]✓ binwalk: {len(flags)} flag(s)[/green]")
                 self.found_flags.extend(flags)
                 
             extracted_flags = self._scan_extracted_files(temp_dir, "binwalk")
             if extracted_flags:
-                console.print(f"[bold green]🎯 Found {len(extracted_flags)} flag(s) inside binwalk extracted files[/bold green]")
+                console.print(f"[green]✓ binwalk extracted: {len(extracted_flags)} flag(s)[/green]")
                 self.found_flags.extend(extracted_flags)
     
     def run_steghide(self):
         if not self.tool_status['steghide']:
-            console.print("[yellow]⊘[/yellow] steghide not available")
             return
         
         if self.file_path.suffix.lower() not in ['.jpg', '.jpeg', '.bmp', '.wav', '.au']:
-            console.print("[yellow]⊘[/yellow] File type not supported by steghide")
             return
-        
-        console.print("\n[bold cyan]═══ Steghide ═══[/bold cyan]")
         
         stdout, stderr, code = self.run_command(
             f'steghide info "{self.file_path}" -p ""',
@@ -650,19 +597,15 @@ class CTFuck:
         
         flags = self.search_flags_from_outputs(stdout, stderr, "steghide info")
         if flags:
-            console.print(f"[bold green]🎯 Found {len(flags)} flag(s)[/bold green]")
+            console.print(f"[green]✓ steghide: {len(flags)} flag(s)[/green]")
             self.found_flags.extend(flags)
 
     def run_outguess(self):
         if not self.tool_status['outguess']:
-            console.print("[yellow]⊘[/yellow] outguess not available")
             return
 
         if self.file_path.suffix.lower() not in ['.jpg', '.jpeg']:
-            console.print("[yellow]⊘[/yellow] File type not supported by outguess")
             return
-
-        console.print("\n[bold cyan]═══ Outguess ═══[/bold cyan]")
 
         stdout, stderr, code = self.run_command(
             ['outguess', '-r', str(self.file_path), '/dev/stdout'],
@@ -671,15 +614,12 @@ class CTFuck:
 
         flags = self.search_flags_from_outputs(stdout, stderr, "outguess output")
         if flags:
-            console.print(f"[bold green]🎯 Found {len(flags)} flag(s)[/bold green]")
+            console.print(f"[green]✓ outguess: {len(flags)} flag(s)[/green]")
             self.found_flags.extend(flags)
     
     def run_foremost(self):
         if not self.tool_status['foremost']:
-            console.print("[yellow]⊘[/yellow] foremost not available")
             return
-        
-        console.print("\n[bold cyan]═══ Foremost ═══[/bold cyan]")
         
         with tempfile.TemporaryDirectory() as temp_dir:
             stdout, stderr, code = self.run_command(
@@ -689,19 +629,15 @@ class CTFuck:
             
             extracted_flags = self._scan_extracted_files(temp_dir, "foremost")
             if extracted_flags:
-                console.print(f"[bold green]🎯 Found {len(extracted_flags)} flag(s) inside foremost extracted files[/bold green]")
+                console.print(f"[green]✓ foremost: {len(extracted_flags)} flag(s)[/green]")
                 self.found_flags.extend(extracted_flags)
     
     def run_zsteg_deep(self):
         if not self.tool_status['zsteg']:
-            console.print("[yellow]⊘[/yellow] zsteg not available")
             return
         
         if self.file_path.suffix.lower() not in ['.png', '.bmp']:
-            console.print("[yellow]⊘[/yellow] File type not supported by zsteg")
             return
-        
-        console.print("\n[bold cyan]═══ Zsteg Deep ═══[/bold cyan]")
         
         stdout, stderr, code = self.run_command(
             ['zsteg', '-a', str(self.file_path)],
@@ -711,18 +647,14 @@ class CTFuck:
         if code == 0:
             flags = self.search_flags_from_outputs(stdout, stderr, "zsteg deep analysis")
             if flags:
-                console.print(f"[bold green]🎯 Found {len(flags)} flag(s)[/bold green]")
+                console.print(f"[green]✓ zsteg deep: {len(flags)} flag(s)[/green]")
                 self.found_flags.extend(flags)
     
     def scan_output_for_flags(self):
         pass
     
     def show_results(self):
-        console.print("\n")
-        console.print(Panel(
-            "[bold cyan]═══ ANALYSIS COMPLETE ═══[/bold cyan]",
-            border_style="cyan"
-        ))
+        console.print("\n[bold cyan]═══ Results ═══[/bold cyan]")
         
         # Remove duplicates while preserving tuple structure
         seen_flags = set()
@@ -758,65 +690,40 @@ class CTFuck:
                 unique_metadata.append(item)
         
         if unique_flags:
-            table = Table(title="[bold green]🎯 FLAGS FOUND[/bold green]", box=box.DOUBLE, border_style="green")
-            table.add_column("#", style="cyan", width=5)
-            table.add_column("Flag", style="bold green")
-            table.add_column("Source", style="dim cyan")
-            
-            for idx, item in enumerate(unique_flags, 1):
+            console.print(f"\n[bold green]🎯 Flags ({len(unique_flags)}):[/bold green]")
+            for item in unique_flags:
                 flag_text = item[0] if isinstance(item, tuple) else item
                 source_text = item[1] if isinstance(item, tuple) else "unknown"
-                table.add_row(str(idx), flag_text, source_text)
-            
-            console.print(table)
-            console.print(f"\n[bold green]Total: {len(unique_flags)} unique flag(s)[/bold green]")
+                console.print(f"  [green]•[/green] {flag_text} [dim]({source_text})[/dim]")
         else:
-            console.print("[yellow]⊘ No flags found[/yellow]")
+            console.print("\n[yellow]No flags found[/yellow]")
             
         if unique_interesting:
-            console.print()
-            table = Table(title="[bold yellow]🔍 INTERESTING DATA (Decoded & High Entropy)[/bold yellow]", box=box.ROUNDED, border_style="yellow")
-            table.add_column("#", style="cyan", width=5)
-            table.add_column("Details", style="yellow")
-            table.add_column("Source", style="dim cyan")
-            
-            for idx, item in enumerate(unique_interesting, 1):
+            console.print(f"\n[bold yellow]🔍 Interesting ({len(unique_interesting)}):[/bold yellow]")
+            for item in unique_interesting[:5]:  # Show max 5
                 data_text = item[0] if isinstance(item, tuple) else item
                 source_text = item[1] if isinstance(item, tuple) else "unknown"
-                table.add_row(str(idx), data_text, source_text)
-                
-            console.print(table)
-            console.print(f"\n[bold yellow]Total: {len(unique_interesting)} interesting item(s)[/bold yellow]")
+                console.print(f"  [yellow]•[/yellow] {data_text[:80]}... [dim]({source_text})[/dim]")
+            if len(unique_interesting) > 5:
+                console.print(f"  [dim]... and {len(unique_interesting) - 5} more[/dim]")
         
         if unique_suspicious:
-            console.print()
-            table = Table(title="[bold red]⚠️  SUSPICIOUS PATTERNS[/bold red]", box=box.ROUNDED, border_style="red")
-            table.add_column("#", style="cyan", width=5)
-            table.add_column("Pattern", style="red")
-            table.add_column("Source", style="dim cyan")
-            
-            for idx, item in enumerate(unique_suspicious, 1):
+            console.print(f"\n[bold red]⚠️  Suspicious ({len(unique_suspicious)}):[/bold red]")
+            for item in unique_suspicious[:3]:  # Show max 3
                 pattern_text = item[0] if isinstance(item, tuple) else item
                 source_text = item[1] if isinstance(item, tuple) else "unknown"
-                table.add_row(str(idx), pattern_text, source_text)
-            
-            console.print(table)
-            console.print(f"\n[bold red]Total: {len(unique_suspicious)} suspicious pattern(s)[/bold red]")
+                console.print(f"  [red]•[/red] {pattern_text[:80]}... [dim]({source_text})[/dim]")
+            if len(unique_suspicious) > 3:
+                console.print(f"  [dim]... and {len(unique_suspicious) - 3} more[/dim]")
         
         if unique_metadata:
-            console.print()
-            table = Table(title="[bold magenta]📋 METADATA FINDINGS[/bold magenta]", box=box.ROUNDED, border_style="magenta")
-            table.add_column("#", style="cyan", width=5)
-            table.add_column("Field", style="magenta")
-            table.add_column("Source", style="dim cyan")
-            
-            for idx, item in enumerate(unique_metadata, 1):
+            console.print(f"\n[bold magenta]📋 Metadata ({len(unique_metadata)}):[/bold magenta]")
+            for item in unique_metadata[:3]:  # Show max 3
                 field_text = item[0] if isinstance(item, tuple) else item
                 source_text = item[1] if isinstance(item, tuple) else "unknown"
-                table.add_row(str(idx), field_text, source_text)
-            
-            console.print(table)
-            console.print(f"\n[bold magenta]Total: {len(unique_metadata)} metadata field(s)[/bold magenta]")
+                console.print(f"  [magenta]•[/magenta] {field_text[:80]} [dim]({source_text})[/dim]")
+            if len(unique_metadata) > 3:
+                console.print(f"  [dim]... and {len(unique_metadata) - 3} more[/dim]")
         
         console.print()
     
