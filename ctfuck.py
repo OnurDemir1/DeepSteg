@@ -11,6 +11,7 @@ import os
 import math
 import urllib.parse
 import codecs
+import zipfile
 from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
@@ -45,7 +46,7 @@ class ToolChecker:
         return status
 
 class CTFuck:
-    def __init__(self, file_path, flag_format, skip_fast=False, skip_deep=False):
+    def __init__(self, file_path, flag_format, wordlist=None, skip_fast=False, skip_deep=False):
         self.file_path = Path(file_path)
         self.flag_format = flag_format.strip()
         self.flag_patterns = self._build_flag_patterns(self.flag_format)
@@ -56,6 +57,7 @@ class CTFuck:
         self.tool_status = ToolChecker.check_all_tools()
         self.skip_fast = skip_fast
         self.skip_deep = skip_deep
+        self.wordlist = self._load_wordlist(wordlist)
         
         if not self.file_path.exists():
             console.print(f"[bold red]✗ Error:[/bold red] File not found: {file_path}")
@@ -76,6 +78,29 @@ class CTFuck:
                 pass
 
         return patterns
+    
+    def _load_wordlist(self, wordlist_path):
+        """Load wordlist from file or use default common passwords"""
+        default_passwords = [
+            '', 'password', '123456', '12345678', 'qwerty', 'abc123',
+            'admin', 'root', 'user', 'test', 'guest', 'pass',
+            'flag', 'ctf', 'challenge', 'steghide', 'steg',
+            'hidden', 'secret', 'key', 'password123', 'admin123',
+            '1234', '12345', '123456789', 'password1', 'letmein',
+            'welcome', 'monkey', 'dragon', 'master', 'sunshine'
+        ]
+        
+        if wordlist_path:
+            try:
+                with open(wordlist_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    passwords = [line.strip() for line in f if line.strip()]
+                console.print(f"[green]✓ Loaded {len(passwords)} passwords from wordlist[/green]")
+                return passwords
+            except Exception as e:
+                console.print(f"[yellow]⚠ Could not load wordlist: {e}. Using default passwords.[/yellow]")
+                return default_passwords
+        
+        return default_passwords
     
     def show_banner(self):
         console.print(f"\n[bold cyan]{BANNER}[/bold cyan]")
@@ -544,6 +569,7 @@ class CTFuck:
         self.run_outguess()
         self.run_foremost()
         self.run_zsteg_deep()
+        self.bruteforce_archives()
     
     def run_exiftool(self):
         if not self.tool_status['exiftool']:
@@ -603,17 +629,16 @@ class CTFuck:
         
         # Check if embedded file is detected
         if 'embedded' in stdout.lower() or 'embedded' in stderr.lower():
-            # Try to extract with common passwords
-            common_passwords = ['', 'password', '123456', 'admin', 'root', 'flag', 'ctf', 'steghide']
+            console.print(f"[yellow]→ Bruteforcing steghide ({len(self.wordlist)} passwords)...[/yellow]")
             
             with tempfile.TemporaryDirectory() as temp_dir:
-                for password in common_passwords:
+                for idx, password in enumerate(self.wordlist, 1):
                     output_file = os.path.join(temp_dir, 'steghide_extracted.bin')
                     extract_cmd = f'steghide extract -sf "{self.file_path}" -xf "{output_file}" -p "{password}" -f'
                     
                     stdout_ex, stderr_ex, code_ex = self.run_command(
                         extract_cmd,
-                        f"Trying steghide password: {'(empty)' if not password else password}",
+                        f"[{idx}/{len(self.wordlist)}] Trying: {'(empty)' if not password else password}",
                         shell=True,
                         silent=True
                     )
@@ -643,6 +668,8 @@ class CTFuck:
                             pass
                         
                         break
+                else:
+                    console.print("[red]✗ Steghide bruteforce failed - try custom wordlist with -w[/red]")
 
     def run_outguess(self):
         if not self.tool_status['outguess']:
@@ -693,6 +720,48 @@ class CTFuck:
             if flags:
                 console.print(f"[green]✓ zsteg deep: {len(flags)} flag(s)[/green]")
                 self.found_flags.extend(flags)
+    
+    def bruteforce_archives(self):
+        """Bruteforce password-protected archives (zip, rar)"""
+        file_ext = self.file_path.suffix.lower()
+        
+        if file_ext == '.zip':
+            self._bruteforce_zip()
+    
+    def _bruteforce_zip(self):
+        """Bruteforce ZIP file passwords"""
+        try:
+            with zipfile.ZipFile(self.file_path, 'r') as zf:
+                # Check if password protected
+                for info in zf.infolist():
+                    if info.flag_bits & 0x1:  # Password protected
+                        console.print(f"[yellow]→ Bruteforcing ZIP ({len(self.wordlist)} passwords)...[/yellow]")
+                        
+                        for idx, password in enumerate(self.wordlist, 1):
+                            try:
+                                pwd_bytes = password.encode('utf-8')
+                                zf.extractall(pwd=pwd_bytes, path=tempfile.gettempdir())
+                                console.print(f"[green]✓ ZIP password found: {password if password else '(empty)'}[/green]")
+                                
+                                # Extract and scan contents
+                                with tempfile.TemporaryDirectory() as temp_dir:
+                                    zf.extractall(pwd=pwd_bytes, path=temp_dir)
+                                    extracted_flags = self._scan_extracted_files(temp_dir, "zip")
+                                    if extracted_flags:
+                                        console.print(f"[green]✓ zip: {len(extracted_flags)} flag(s)[/green]")
+                                        self.found_flags.extend(extracted_flags)
+                                return
+                            except (RuntimeError, zipfile.BadZipFile):
+                                continue
+                            except Exception:
+                                continue
+                        
+                        console.print("[red]✗ ZIP bruteforce failed - try custom wordlist with -w[/red]")
+                        break
+        except zipfile.BadZipFile:
+            pass
+        except Exception:
+            pass
     
     def scan_output_for_flags(self):
         pass
@@ -797,8 +866,8 @@ def main():
         epilog="""
 Examples:
   ctfuck image.png -f "FLAG{"
-  ctfuck image.png -f "CTF{"
-  ctfuck image.png -f "flag{" --skip-fast
+  ctfuck image.png -f "CTF{" -w /usr/share/wordlists/rockyou.txt
+  ctfuck archive.zip -f "flag{" --skip-fast
         """
     )
     
@@ -811,6 +880,11 @@ Examples:
         '-f', '--flag-format',
         required=True,
         help='Flag format to search (e.g., "FLAG{", "CTF{")'
+    )
+    
+    parser.add_argument(
+        '-w', '--wordlist',
+        help='Custom wordlist file for bruteforce attacks'
     )
 
     parser.add_argument(
@@ -831,6 +905,7 @@ Examples:
         ctfuck = CTFuck(
             file_path=args.file,
             flag_format=args.flag_format,
+            wordlist=args.wordlist,
             skip_fast=args.skip_fast,
             skip_deep=args.skip_deep,
         )
