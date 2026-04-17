@@ -83,4 +83,4 @@ cp "$ROOT_DIR"/ctfuck.py /opt/ctfuck/
 cp "$ROOT_DIR"/requirements.txt /opt/ctfuck/ 2>/dev/null || true
 
 success "Installation complete: 'ctfuck' command ready"
-info "Usage: ctfuck <file> -f FLAG{ [-o output_dir] [--skip-fast] [--skip-deep]"
+info "Usage: ctfuck <file> -f FLAG{ [-w wordlist.txt]"
