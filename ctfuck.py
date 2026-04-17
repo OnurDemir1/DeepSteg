@@ -840,7 +840,7 @@ class CTFuck:
                     combined = f"{stdout}\n{stderr}".strip()
                     if combined:
                         console.print(f"\n[bold cyan]═══ {tool_name} ═══[/bold cyan]")
-                        console.print(combined)
+                        console.print(combined, highlight=False)
         
         console.print()
     
