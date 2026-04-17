@@ -90,13 +90,21 @@ class CTFuck:
         patterns = []
 
         escaped_prefix = re.escape(flag_format)
-        patterns.append(re.compile(rf"{escaped_prefix}[^\r\n\t ]{{0,300}}}}"))
-        patterns.append(re.compile(rf"{escaped_prefix}.{{0,300}}?}}", re.DOTALL))
+        # Case-insensitive matching - search for FLAG{}, flag{}, Flag{} etc.
+        patterns.append(re.compile(rf"{escaped_prefix}[^\r\n\t ]{{0,300}}}}", re.IGNORECASE))
+        patterns.append(re.compile(rf"{escaped_prefix}.{{0,300}}?}}", re.DOTALL | re.IGNORECASE))
+
+        # Also add specific case variations as separate patterns
+        variations = {flag_format, flag_format.upper(), flag_format.lower(), flag_format.swapcase()}
+        for variant in variations:
+            if variant != flag_format:
+                escaped_variant = re.escape(variant)
+                patterns.append(re.compile(rf"{escaped_variant}[^\r\n\t ]{{0,300}}}}"))
 
         regex_like_tokens = (".*", ".+", "[", "(", "\\d", "\\w", "\\s", "|")
         if any(token in flag_format for token in regex_like_tokens):
             try:
-                patterns.append(re.compile(flag_format))
+                patterns.append(re.compile(flag_format, re.IGNORECASE))
             except re.error:
                 pass
 
