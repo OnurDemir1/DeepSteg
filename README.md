@@ -22,22 +22,24 @@ Required:
 - `-f, --flag-format` Flag prefix to search (example: `FLAG{`, `CTF{`)
 
 Optional:
-- `--skip-fast` Skip fast scan phase
-- `--skip-deep` Skip deep analysis phase
+- `-w, --wordlist` Custom wordlist file for bruteforce attacks
 
 ## Examples
 
 ```bash
 ctfuck test.png -f "FLAG{"
-ctfuck image.jpg -f "CTF{"
-ctfuck challenge.png -f "flag{" --skip-fast
+ctfuck image.jpg -f "CTF{" -w /usr/share/wordlists/rockyou.txt
+ctfuck archive.zip -f "flag{"
 ```
 
 ## What it does
 
-1. Fast scan: `strings` and `zsteg`
-2. Deep analysis: `exiftool`, `binwalk`, `zsteg`, `steghide`, `outguess`
-3. Scans tool outputs in-memory for flags 
+Runs all available tools against the target file and reports every matching flag with its source:
+
+- `strings` · `zsteg` · `exiftool` · `binwalk` · `steghide` · `outguess` · `foremost`
+- Encoded flag detection (Base64, Hex, ROT13, URL, Binary, Base32, etc.)
+- Steghide & ZIP bruteforce with custom wordlist support
+- Extracted files saved for manual inspection when found 
 
 
 ## Disclaimer

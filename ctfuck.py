@@ -46,7 +46,7 @@ class ToolChecker:
         return status
 
 class CTFuck:
-    def __init__(self, file_path, flag_format, wordlist=None, skip_fast=False, skip_deep=False):
+    def __init__(self, file_path, flag_format, wordlist=None):
         self.file_path = Path(file_path)
         self.flag_format = flag_format.strip()
         self.flag_patterns = self._build_flag_patterns(self.flag_format)
@@ -54,9 +54,8 @@ class CTFuck:
         self.interesting_strings = []
         self.suspicious_patterns = []
         self.metadata_findings = []
+        self.tool_outputs = []  # [(tool_name, stdout, stderr), ...]
         self.tool_status = ToolChecker.check_all_tools()
-        self.skip_fast = skip_fast
-        self.skip_deep = skip_deep
         self.wordlist = self._load_wordlist(wordlist)
         
         if not self.file_path.exists():
@@ -140,7 +139,7 @@ class CTFuck:
             console.print(f"[dim]Missing:[/dim] [red]{', '.join(missing)}[/red]")
         console.print()
     
-    def run_command(self, cmd, description, shell=False, silent=False):
+    def run_command(self, cmd, description, shell=False, silent=False, save_output=False):
         try:
             if not silent:
                 console.print(f"[dim]→ {description}[/dim]")
@@ -152,6 +151,8 @@ class CTFuck:
                 errors='ignore',
                 timeout=60
             )
+            if save_output:
+                self.tool_outputs.append((description, result.stdout, result.stderr))
             return result.stdout, result.stderr, result.returncode
         except subprocess.TimeoutExpired:
             if not silent:
@@ -522,72 +523,53 @@ class CTFuck:
             
         return flags
     
-    def fast_scan(self):
-        console.print("[bold yellow]⚡ Fast Scan[/bold yellow]")
+    def scan(self):
+        console.print("\n[bold cyan]🔍 Scanning...[/bold cyan]")
         
-        flags_found = []
-        
-        if self.tool_status['strings']:
-            stdout, stderr, code = self.run_command(
-                ['strings', str(self.file_path)],
-                "Running strings"
-            )
-            flags = self.search_flags_from_outputs(stdout, stderr, "fast scan (strings)")
-            if flags:
-                flags_found.extend(flags)
-                console.print(f"[green]✓ strings: {len(flags)} flag(s)[/green]")
-        
-        if self.tool_status['zsteg'] and self.file_path.suffix.lower() in ['.png', '.bmp']:
-            stdout, stderr, code = self.run_command(
-                ['zsteg', '-a', str(self.file_path)],
-                "Running zsteg"
-            )
-            flags = self.search_flags_from_outputs(stdout, stderr, "fast scan (zsteg)")
-            if flags:
-                flags_found.extend(flags)
-                console.print(f"[green]✓ zsteg: {len(flags)} flag(s)[/green]")
-        
-        # Remove duplicates while preserving tuple structure
-        unique_flags = []
-        seen = set()
-        for flag in flags_found:
-            flag_text = flag[0] if isinstance(flag, tuple) else flag
-            if flag_text not in seen:
-                seen.add(flag_text)
-                unique_flags.append(flag)
-        
-        if unique_flags:
-            console.print("\n[bold green]🎯 Flags Found:[/bold green]")
-            for flag in unique_flags:
-                console.print(f"  [green]•[/green] {flag[0]} [dim]({flag[1]})[/dim]")
-            self.found_flags.extend(unique_flags)
-            
-            if not Confirm.ask("\n[yellow]Continue with deep analysis?[/yellow]", default=False):
-                return True
-        else:
-            console.print("[dim]No flags found, starting deep analysis...[/dim]")
-        
-        console.print()
-        return False
-    
-    
-    def deep_analysis(self):
-        console.print("\n[bold magenta]🔍 Deep Analysis[/bold magenta]")
-        
+        self.run_strings()
+        self.run_zsteg()
         self.run_exiftool()
         self.run_binwalk()
         self.run_steghide()
         self.run_outguess()
         self.run_foremost()
-        self.run_zsteg_deep()
         self.bruteforce_archives()
+    
+    def run_strings(self):
+        if not self.tool_status['strings']:
+            return
+        stdout, stderr, code = self.run_command(
+            ['strings', str(self.file_path)],
+            "strings",
+            save_output=True
+        )
+        flags = self.search_flags_from_outputs(stdout, stderr, "strings")
+        if flags:
+            console.print(f"[green]✓ strings: {len(flags)} flag(s)[/green]")
+            self.found_flags.extend(flags)
+    
+    def run_zsteg(self):
+        if not self.tool_status['zsteg']:
+            return
+        if self.file_path.suffix.lower() not in ['.png', '.bmp']:
+            return
+        stdout, stderr, code = self.run_command(
+            ['zsteg', '-a', str(self.file_path)],
+            "zsteg",
+            save_output=True
+        )
+        flags = self.search_flags_from_outputs(stdout, stderr, "zsteg")
+        if flags:
+            console.print(f"[green]✓ zsteg: {len(flags)} flag(s)[/green]")
+            self.found_flags.extend(flags)
     
     def run_exiftool(self):
         if not self.tool_status['exiftool']:
             return
         stdout, stderr, code = self.run_command(
             ['exiftool', str(self.file_path)],
-            "Extracting metadata"
+            "exiftool",
+            save_output=True
         )
         
         if code == 0:
@@ -606,7 +588,8 @@ class CTFuck:
         with tempfile.TemporaryDirectory() as temp_dir:
             stdout, stderr, code = self.run_command(
                 ['binwalk', '-e', '-C', temp_dir, str(self.file_path)],
-                "Scanning and extracting embedded files"
+                "binwalk",
+                save_output=True
             )
             
             flags = self.search_flags_from_outputs(stdout, stderr, "binwalk mapping")
@@ -633,8 +616,9 @@ class CTFuck:
         # First check if there's embedded data
         stdout, stderr, code = self.run_command(
             f'steghide info "{self.file_path}" -p ""',
-            "Checking steghide info",
-            shell=True
+            "steghide",
+            shell=True,
+            save_output=True
         )
         
         flags = self.search_flags_from_outputs(stdout, stderr, "steghide info")
@@ -698,7 +682,8 @@ class CTFuck:
 
         stdout, stderr, code = self.run_command(
             ['outguess', '-r', str(self.file_path), '/dev/stdout'],
-            "Scanning with outguess"
+            "outguess",
+            save_output=True
         )
 
         flags = self.search_flags_from_outputs(stdout, stderr, "outguess output")
@@ -713,7 +698,8 @@ class CTFuck:
         with tempfile.TemporaryDirectory() as temp_dir:
             stdout, stderr, code = self.run_command(
                 ['foremost', '-i', str(self.file_path), '-o', temp_dir],
-                "Extracting files with foremost"
+                "foremost",
+                save_output=True
             )
 
             saved_path = self._persist_extracted_files(temp_dir, "foremost")
@@ -724,24 +710,6 @@ class CTFuck:
             if extracted_flags:
                 console.print(f"[green]✓ foremost: {len(extracted_flags)} flag(s)[/green]")
                 self.found_flags.extend(extracted_flags)
-    
-    def run_zsteg_deep(self):
-        if not self.tool_status['zsteg']:
-            return
-        
-        if self.file_path.suffix.lower() not in ['.png', '.bmp']:
-            return
-        
-        stdout, stderr, code = self.run_command(
-            ['zsteg', '-a', str(self.file_path)],
-            "Running comprehensive analysis"
-        )
-        
-        if code == 0:
-            flags = self.search_flags_from_outputs(stdout, stderr, "zsteg deep analysis")
-            if flags:
-                console.print(f"[green]✓ zsteg deep: {len(flags)} flag(s)[/green]")
-                self.found_flags.extend(flags)
     
     def bruteforce_archives(self):
         """Bruteforce password-protected archives (zip, rar)"""
@@ -785,9 +753,6 @@ class CTFuck:
         except Exception:
             pass
     
-    def scan_output_for_flags(self):
-        pass
-    
     def show_results(self):
         console.print("\n[bold cyan]═══ Results ═══[/bold cyan]")
         
@@ -830,6 +795,7 @@ class CTFuck:
                 seen_metadata.add(data_text)
                 unique_metadata.append(item)
         
+        # Flags
         if unique_flags:
             console.print(f"\n[bold green]🎯 Flags ({len(unique_flags)}):[/bold green]")
             for item in unique_flags:
@@ -839,6 +805,7 @@ class CTFuck:
         else:
             console.print("\n[yellow]No flags found[/yellow]")
             
+        # Interesting
         if actionable_interesting:
             console.print(f"\n[bold yellow]🔍 Interesting ({len(actionable_interesting)}):[/bold yellow]")
             for item in actionable_interesting[:5]:
@@ -848,34 +815,31 @@ class CTFuck:
             if len(actionable_interesting) > 5:
                 console.print(f"  [dim]... and {len(actionable_interesting) - 5} more[/dim]")
         
+        # Metadata
         if unique_metadata:
             console.print(f"\n[bold magenta]📋 Metadata ({len(unique_metadata)}):[/bold magenta]")
-            for item in unique_metadata[:3]:  # Show max 3
+            for item in unique_metadata[:3]:
                 field_text = item[0] if isinstance(item, tuple) else item
                 source_text = item[1] if isinstance(item, tuple) else "unknown"
                 console.print(f"  [magenta]•[/magenta] {field_text[:80]} [dim]({source_text})[/dim]")
             if len(unique_metadata) > 3:
                 console.print(f"  [dim]... and {len(unique_metadata) - 3} more[/dim]")
         
+        # If no flags found, offer to show raw tool outputs
+        if not unique_flags:
+            if Confirm.ask("\n[yellow]No flags found. Do you want to see raw tool outputs?[/yellow]", default=False):
+                for tool_name, stdout, stderr in self.tool_outputs:
+                    combined = f"{stdout}\n{stderr}".strip()
+                    if combined:
+                        console.print(f"\n[bold cyan]═══ {tool_name} ═══[/bold cyan]")
+                        console.print(combined)
+        
         console.print()
     
     def run(self):
         self.show_banner()
         self.show_tool_status()
-        
-        fast_done = False
-        if not self.skip_fast:
-            fast_done = self.fast_scan()
-        else:
-            console.print("[yellow]⊘[/yellow] Fast scan skipped")
-        
-        if fast_done or self.skip_deep:
-            if self.skip_deep:
-                console.print("[yellow]⊘[/yellow] Deep analysis skipped")
-            self.show_results()
-            return
-        
-        self.deep_analysis()
+        self.scan()
         self.show_results()
 
 def main():
@@ -886,7 +850,7 @@ def main():
 Examples:
   ctfuck image.png -f "FLAG{"
   ctfuck image.png -f "CTF{" -w /usr/share/wordlists/rockyou.txt
-  ctfuck archive.zip -f "flag{" --skip-fast
+  ctfuck archive.zip -f "flag{"
         """
     )
     
@@ -905,18 +869,6 @@ Examples:
         '-w', '--wordlist',
         help='Custom wordlist file for bruteforce attacks'
     )
-
-    parser.add_argument(
-        '--skip-fast',
-        action='store_true',
-        help='Skip fast scan (strings/zsteg)'
-    )
-
-    parser.add_argument(
-        '--skip-deep',
-        action='store_true',
-        help='Skip deep analysis'
-    )
     
     args = parser.parse_args()
     
@@ -925,8 +877,6 @@ Examples:
             file_path=args.file,
             flag_format=args.flag_format,
             wordlist=args.wordlist,
-            skip_fast=args.skip_fast,
-            skip_deep=args.skip_deep,
         )
         ctfuck.run()
     except KeyboardInterrupt:
