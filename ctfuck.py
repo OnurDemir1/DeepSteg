@@ -6,6 +6,7 @@ import re
 import shutil
 import base64
 import binascii
+import hashlib
 import tempfile
 import os
 import math
@@ -17,11 +18,53 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.prompt import Confirm
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 from rich import box
 
 console = Console()
 
 BANNER = "CTFuck - Steganography Automation Tool"
+
+# ---------------------------------------------------------------------------
+# Default embedded wordlist (~150 most common CTF/stego passwords)
+# ---------------------------------------------------------------------------
+DEFAULT_WORDLIST = [
+    # Empty / trivial
+    '', 'password', 'Password', 'PASSWORD',
+    # Numeric
+    '123456', '12345678', '1234', '12345', '123456789', '000000', '111111',
+    '654321', '666666', '1q2w3e4r', '1q2w3e', 'qwerty', 'qwerty123', 'qwertyuiop',
+    # Common words
+    'admin', 'Admin', 'root', 'user', 'test', 'guest', 'pass', 'pass123',
+    'password1', 'password123', 'letmein', 'welcome', 'welcome1',
+    'monkey', 'dragon', 'master', 'sunshine', 'princess', 'iloveyou',
+    'shadow', 'superman', 'batman', 'trustno1', 'football', 'baseball',
+    'soccer', 'hockey', 'jordan', 'harley', 'ranger', 'dakota', 'cookie',
+    'maggie', 'jessica', 'michael', 'charlie', 'thomas', 'hunter', 'pepper',
+    'access', 'andrew', 'george', 'jordan23', 'robert', 'daniel', 'hello',
+    'starwars', 'midnight', 'mustang', 'maverick', 'matrix', 'coffee',
+    # CTF-specific
+    'ctf', 'CTF', 'flag', 'Flag', 'FLAG',
+    'ctf2024', 'ctf2025', 'ctf2023',
+    'challenge', 'hackme', 'hacker', 'hackthebox', 'tryhackme',
+    'picoctf', 'pwn', 'exploit', 'solve', 'answer',
+    # Stego-specific
+    'steg', 'stego', 'Stego', 'STEGO',
+    'steghide', 'steganography', 'hidden', 'secret', 'Secret', 'SECRET',
+    'embed', 'embedded', 'invisible', 'conceal', 'covert', 'hide',
+    # Crypto-related
+    'key', 'Key', 'KEY', 'mykey', 'publickey', 'privatekey',
+    'crypto', 'cipher', 'encode', 'decode', 'encrypt', 'decrypt',
+    'base64', 'binary', 'hex', 'ascii',
+    # Common short passwords
+    'abc', 'abc123', 'pass1', 'p@ss', 'p@ssw0rd', 'p@$$w0rd',
+    'sup3r', 's3cr3t', 's3cret', 'h1dd3n', '0wn3d',
+    # Names & places often used
+    'admin123', 'root123', 'toor', 'kali', 'parrot', 'ubuntu', 'debian', 'linux',
+    # Seasonal / event
+    'summer', 'winter', 'spring', 'autumn', 'christmas', 'newyear',
+]
+
 
 class ToolChecker:
     REQUIRED_TOOLS = {
@@ -33,11 +76,11 @@ class ToolChecker:
         'outguess': 'outguess',
         'foremost': 'foremost'
     }
-    
+
     @staticmethod
     def check_tool(tool_name):
         return shutil.which(tool_name) is not None
-    
+
     @classmethod
     def check_all_tools(cls):
         status = {}
@@ -45,8 +88,10 @@ class ToolChecker:
             status[tool] = cls.check_tool(tool)
         return status
 
+
 class CTFuck:
-    def __init__(self, file_path, flag_format, wordlist=None):
+    def __init__(self, file_path, flag_format, wordlist=None, auto_brute=False,
+                 max_recursion_depth=3, _depth=0, _visited=None):
         self.file_path = Path(file_path)
         self.flag_format = flag_format.strip()
         self.flag_patterns = self._build_flag_patterns(self.flag_format)
@@ -54,13 +99,39 @@ class CTFuck:
         self.interesting_strings = []
         self.suspicious_patterns = []
         self.metadata_findings = []
-        self.tool_outputs = []  # [(tool_name, stdout, stderr), ...]
+        self.tool_outputs = []           # [(tool_name, stdout, stderr), ...]
         self.tool_status = ToolChecker.check_all_tools()
+        self.auto_brute = auto_brute
         self.wordlist = self._load_wordlist(wordlist)
-        
+        self._wordlist_path = wordlist   # keep raw path for sub-analyzers
+        self._max_depth = max_recursion_depth
+        self._depth = _depth             # current recursion depth
+
+        # Shared visited set across all recursive instances (by SHA-256)
+        self._visited = _visited if _visited is not None else set()
+
         if not self.file_path.exists():
             console.print(f"[bold red]✗ Error:[/bold red] File not found: {file_path}")
             exit(1)
+
+        # Register self in visited set
+        self._visited.add(self._file_hash(self.file_path))
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _file_hash(path):
+        """Return SHA-256 hex digest for a file (for dedup)."""
+        h = hashlib.sha256()
+        try:
+            with open(path, 'rb') as f:
+                for chunk in iter(lambda: f.read(65536), b''):
+                    h.update(chunk)
+            return h.hexdigest()
+        except Exception:
+            return str(path)
 
     def _get_output_root(self):
         return self.file_path.parent / f"ctfuck_output_{self.file_path.stem}"
@@ -70,7 +141,7 @@ class CTFuck:
         if not source_path.exists():
             return None
 
-        extracted_files = [path for path in source_path.rglob('*') if path.is_file()]
+        extracted_files = [p for p in source_path.rglob('*') if p.is_file()]
         if not extracted_files:
             return None
 
@@ -78,28 +149,25 @@ class CTFuck:
         destination_root = output_root / tool_name
         destination_root.mkdir(parents=True, exist_ok=True)
 
-        for file_path in extracted_files:
-            relative_path = file_path.relative_to(source_path)
+        for fp in extracted_files:
+            relative_path = fp.relative_to(source_path)
             destination_path = destination_root / relative_path
             destination_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(file_path, destination_path)
+            shutil.copy2(fp, destination_path)
 
         return destination_root
 
     def _build_flag_patterns(self, flag_format):
         patterns = []
-
         escaped_prefix = re.escape(flag_format)
-        # Case-insensitive matching - search for FLAG{}, flag{}, Flag{} etc.
         patterns.append(re.compile(rf"{escaped_prefix}[^\r\n\t ]{{0,300}}}}", re.IGNORECASE))
         patterns.append(re.compile(rf"{escaped_prefix}.{{0,300}}?}}", re.DOTALL | re.IGNORECASE))
 
-        # Also add specific case variations as separate patterns
         variations = {flag_format, flag_format.upper(), flag_format.lower(), flag_format.swapcase()}
         for variant in variations:
             if variant != flag_format:
                 escaped_variant = re.escape(variant)
-                patterns.append(re.compile(rf"{escaped_variant}[^\r\n\t ]{{0,300}}}}"))
+                patterns.append(re.compile(rf"{escaped_variant}[^\r\n\t ]{{0,300}}}}", ))
 
         regex_like_tokens = (".*", ".+", "[", "(", "\\d", "\\w", "\\s", "|")
         if any(token in flag_format for token in regex_like_tokens):
@@ -109,44 +177,91 @@ class CTFuck:
                 pass
 
         return patterns
-    
+
     def _load_wordlist(self, wordlist_path):
-        """Load wordlist from file or use default common passwords"""
-        default_passwords = [
-            '', 'password', '123456', '12345678', 'qwerty', 'abc123',
-            'admin', 'root', 'user', 'test', 'guest', 'pass',
-            'flag', 'ctf', 'challenge', 'steghide', 'steg',
-            'hidden', 'secret', 'key', 'password123', 'admin123',
-            '1234', '12345', '123456789', 'password1', 'letmein',
-            'welcome', 'monkey', 'dragon', 'master', 'sunshine'
-        ]
-        
+        """Load wordlist from file or use default common passwords."""
         if wordlist_path:
             try:
                 with open(wordlist_path, 'r', encoding='utf-8', errors='ignore') as f:
                     passwords = [line.strip() for line in f if line.strip()]
-                console.print(f"[green]✓ Loaded {len(passwords)} passwords from wordlist[/green]")
+                if self._depth == 0:
+                    console.print(f"[green]✓ Loaded {len(passwords)} passwords from wordlist[/green]")
                 return passwords
             except Exception as e:
-                console.print(f"[yellow]⚠ Could not load wordlist: {e}. Using default passwords.[/yellow]")
-                return default_passwords
-        
-        return default_passwords
-    
+                if self._depth == 0:
+                    console.print(f"[yellow]⚠ Could not load wordlist: {e}. Using default passwords.[/yellow]")
+                return DEFAULT_WORDLIST
+
+        return DEFAULT_WORDLIST
+
+    # ------------------------------------------------------------------
+    # Recursive file analysis
+    # ------------------------------------------------------------------
+
+    def _analyze_file(self, file_path, depth=None):
+        """
+        Recursively analyze an extracted file with all available tools.
+        Returns (flags, interesting_strings) lists.
+        """
+        if depth is None:
+            depth = self._depth + 1
+
+        if depth > self._max_depth:
+            return [], []
+
+        fp = Path(file_path)
+        if not fp.exists() or fp.stat().st_size == 0:
+            return [], []
+
+        # Deduplication via SHA-256
+        fhash = self._file_hash(fp)
+        if fhash in self._visited:
+            return [], []
+        self._visited.add(fhash)
+
+        indent = "  " * depth
+        console.print(f"[dim]{indent}↳ Recursing into: [bold]{fp.name}[/bold] (depth {depth})[/dim]")
+
+        sub = CTFuck(
+            file_path=str(fp),
+            flag_format=self.flag_format,
+            wordlist=self._wordlist_path,
+            auto_brute=self.auto_brute,
+            max_recursion_depth=self._max_depth,
+            _depth=depth,
+            _visited=self._visited,
+        )
+        sub.scan()
+
+        return sub.found_flags, sub.interesting_strings
+
+    # ------------------------------------------------------------------
+    # Banner / status
+    # ------------------------------------------------------------------
+
     def show_banner(self):
         console.print(f"\n[bold cyan]{BANNER}[/bold cyan]")
-        console.print(f"[dim]Target:[/dim] {self.file_path} | [dim]Flag:[/dim] {self.flag_format}\n")
-    
+        brute_tag = " | [bold yellow]auto-brute ON[/bold yellow]" if self.auto_brute else ""
+        console.print(
+            f"[dim]Target:[/dim] {self.file_path} | "
+            f"[dim]Flag:[/dim] {self.flag_format}"
+            f"{brute_tag}\n"
+        )
+
     def show_tool_status(self):
         available = [tool for tool, status in self.tool_status.items() if status]
-        missing = [tool for tool, status in self.tool_status.items() if not status]
-        
+        missing   = [tool for tool, status in self.tool_status.items() if not status]
+
         if available:
             console.print(f"[dim]Tools:[/dim] [green]{', '.join(available)}[/green]")
         if missing:
             console.print(f"[dim]Missing:[/dim] [red]{', '.join(missing)}[/red]")
         console.print()
-    
+
+    # ------------------------------------------------------------------
+    # Command runner
+    # ------------------------------------------------------------------
+
     def run_command(self, cmd, description, shell=False, silent=False, save_output=False):
         try:
             if not silent:
@@ -170,7 +285,11 @@ class CTFuck:
             if not silent:
                 console.print(f"[red]✗ Error: {str(e)}[/red]")
             return "", str(e), -1
-    
+
+    # ------------------------------------------------------------------
+    # Flag search
+    # ------------------------------------------------------------------
+
     def search_flags(self, text, source="unknown"):
         found = []
         for pattern in self.flag_patterns:
@@ -185,33 +304,29 @@ class CTFuck:
     def calculate_entropy(self, data: bytes):
         if not data:
             return 0
-        
-        # Count byte frequencies efficiently
         byte_counts = [0] * 256
         for byte in data:
             byte_counts[byte] += 1
-        
         entropy = 0
         data_len = len(data)
         for count in byte_counts:
             if count > 0:
                 p_x = count / data_len
-                entropy += - p_x * math.log(p_x, 2)
+                entropy += -p_x * math.log(p_x, 2)
         return entropy
 
     def find_encoded_flags(self, text, source="unknown"):
         found = []
         interesting = []
-        
-        # 1. Base64 Detection (multiple patterns)
+
+        # 1. Base64
         b64_patterns = [
             re.compile(r'(?:[A-Za-z0-9+/]{4}){4,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?'),
-            re.compile(r'(?:[A-Za-z0-9+/]{4}){2,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)')  # Shorter base64
+            re.compile(r'(?:[A-Za-z0-9+/]{4}){2,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)')
         ]
-        
         for pattern in b64_patterns:
             for b64_match in pattern.findall(text):
-                if len(b64_match) < 8:  # Too short
+                if len(b64_match) < 8:
                     continue
                 try:
                     decoded = base64.b64decode(b64_match).decode('utf-8', errors='ignore')
@@ -219,23 +334,19 @@ class CTFuck:
                         flags = self.search_flags(decoded, source)
                         if flags:
                             found.extend(flags)
-                        # Recursive decode - maybe it's double encoded
                         recursive_flags, recursive_interesting = self.find_encoded_flags(decoded, source)
                         found.extend(recursive_flags)
                         interesting.extend(recursive_interesting)
-                        
-                        # Check for interesting content
                         self._check_interesting_content(decoded, f"[Base64] {b64_match[:50]}...", source, interesting)
                 except Exception:
                     pass
-        
-        # 2. Hex Detection
+
+        # 2. Hex
         hex_patterns = [
-            re.compile(r'\b(?:[0-9a-fA-F]{2}){8,}\b'),  # Standard hex
-            re.compile(r'(?:0x[0-9a-fA-F]{2}\s*){4,}'),  # 0x prefixed
-            re.compile(r'(?:[0-9a-fA-F]{2}\s+){4,}')     # Space separated
+            re.compile(r'\b(?:[0-9a-fA-F]{2}){8,}\b'),
+            re.compile(r'(?:0x[0-9a-fA-F]{2}\s*){4,}'),
+            re.compile(r'(?:[0-9a-fA-F]{2}\s+){4,}')
         ]
-        
         for pattern in hex_patterns:
             for hex_match in pattern.findall(text):
                 cleaned_hex = re.sub(r'[^0-9a-fA-F]', '', hex_match)
@@ -250,8 +361,8 @@ class CTFuck:
                         self._check_interesting_content(decoded, f"[Hex] {hex_match[:50]}...", source, interesting)
                 except Exception:
                     pass
-        
-        # 3. URL Encoding
+
+        # 3. URL encoding
         url_pattern = re.compile(r'(?:%[0-9a-fA-F]{2}){3,}')
         for url_match in url_pattern.findall(text):
             try:
@@ -263,19 +374,18 @@ class CTFuck:
                     self._check_interesting_content(decoded, f"[URL] {url_match[:50]}...", source, interesting)
             except Exception:
                 pass
-        
+
         # 4. ROT13
         try:
             rot13_decoded = codecs.decode(text, 'rot_13')
             if rot13_decoded != text:
                 flags = self.search_flags(rot13_decoded, source)
-                if flags:
-                    for flag in flags:
-                        found.append((flag[0], f"{source} (ROT13)"))
+                for flag in flags:
+                    found.append((flag[0], f"{source} (ROT13)"))
         except Exception:
             pass
-        
-        # 5. Binary (01 sequences)
+
+        # 5. Binary
         binary_pattern = re.compile(r'\b[01]{8,}\b')
         for binary_match in binary_pattern.findall(text):
             if len(binary_match) % 8 != 0:
@@ -289,7 +399,7 @@ class CTFuck:
                     self._check_interesting_content(decoded, f"[Binary] {binary_match[:50]}...", source, interesting)
             except Exception:
                 pass
-        
+
         # 6. Octal
         octal_pattern = re.compile(r'(?:\\[0-7]{3}){3,}')
         for octal_match in octal_pattern.findall(text):
@@ -302,8 +412,8 @@ class CTFuck:
                     self._check_interesting_content(decoded, f"[Octal] {octal_match[:50]}...", source, interesting)
             except Exception:
                 pass
-        
-        # 7. ASCII decimal codes (space or comma separated)
+
+        # 7. ASCII decimal
         ascii_pattern = re.compile(r'\b(?:\d{2,3}[,\s]+){4,}\d{2,3}\b')
         for ascii_match in ascii_pattern.findall(text):
             try:
@@ -316,7 +426,7 @@ class CTFuck:
                     self._check_interesting_content(decoded, f"[ASCII] {ascii_match[:50]}...", source, interesting)
             except Exception:
                 pass
-        
+
         # 8. Base32
         base32_pattern = re.compile(r'\b[A-Z2-7]{8,}={0,6}\b')
         for b32_match in base32_pattern.findall(text):
@@ -331,146 +441,112 @@ class CTFuck:
                     self._check_interesting_content(decoded, f"[Base32] {b32_match[:50]}...", source, interesting)
             except Exception:
                 pass
-        
-        # 9. Reversed strings (look for common patterns reversed)
+
+        # 9. Reversed
         reversed_text = text[::-1]
         reversed_flags = self.search_flags(reversed_text, source)
-        if reversed_flags:
-            for flag in reversed_flags:
-                found.append((flag[0], f"{source} (Reversed)"))
-        
+        for flag in reversed_flags:
+            found.append((flag[0], f"{source} (Reversed)"))
+
         return found, interesting
-    
+
     def _check_interesting_content(self, decoded, encoding_info, source, interesting_list):
-        """Enhanced interesting content detection with multiple categories"""
+        """Enhanced interesting content detection."""
         if not decoded or len(decoded) < 3:
             return
-        
         decoded_lower = decoded.lower()
         is_printable = all(32 <= ord(c) < 127 or c in '\n\r\t' for c in decoded)
-        
         if not is_printable:
             return
-        
-        # Category 1: CTF Keywords
+
         ctf_keywords = ['flag', 'ctf', 'challenge', 'solve', 'answer']
         if any(kw in decoded_lower for kw in ctf_keywords):
             interesting_list.append((f"{encoding_info} -> {decoded[:150]}", f"{source} [CTF Keyword]"))
             return
-        
-        # Category 2: Credentials/Secrets
+
         secret_keywords = ['password', 'passwd', 'pwd', 'secret', 'key', 'token', 'api', 'auth']
         if any(kw in decoded_lower for kw in secret_keywords):
             interesting_list.append((f"{encoding_info} -> {decoded[:150]}", f"{source} [Credentials]"))
             return
-        
-        # Category 3: Admin/Access
+
         admin_keywords = ['admin', 'root', 'user', 'login', 'username']
         if any(kw in decoded_lower for kw in admin_keywords):
             interesting_list.append((f"{encoding_info} -> {decoded[:150]}", f"{source} [Access Info]"))
             return
-        
-        # Category 4: URLs and Paths
-        if any(pattern in decoded_lower for pattern in ['http://', 'https://', 'ftp://', '://']):
+
+        if any(p in decoded_lower for p in ['http://', 'https://', 'ftp://', '://']):
             interesting_list.append((f"{encoding_info} -> {decoded[:150]}", f"{source} [URL]"))
             return
-        
+
         if decoded.startswith('/') or ':\\\\' in decoded or re.search(r'[A-Z]:\\\\', decoded):
             interesting_list.append((f"{encoding_info} -> {decoded[:150]}", f"{source} [File Path]"))
             return
-        
-        # Category 5: Code/Commands
+
         code_patterns = ['import ', 'function ', 'def ', 'class ', 'echo ', 'cat ', 'ls ', 'grep ']
         if any(pattern in decoded_lower for pattern in code_patterns):
             interesting_list.append((f"{encoding_info} -> {decoded[:150]}", f"{source} [Code/Command]"))
             return
-        
-        # Category 6: Long readable strings (might be hidden messages)
+
         if len(decoded) > 20 and decoded.count(' ') > 2:
             words = decoded.split()
             if len(words) > 3:
                 interesting_list.append((f"{encoding_info} -> {decoded[:150]}", f"{source} [Long Text]"))
-    
+
     def _detect_suspicious_patterns(self, text, source):
-        """Detect suspicious patterns that might indicate hidden data"""
-        # Detect repeated patterns
         repeated_pattern = re.compile(r'(\b\w{4,}\b)(?:\s+\1){2,}')
         for match in repeated_pattern.finditer(text):
             self.suspicious_patterns.append((f"Repeated word: '{match.group(1)}'", source))
-        
-        # Detect unusual character frequencies
+
         if len(text) > 100:
             char_freq = {}
             for char in text:
                 if char.isalnum():
                     char_freq[char] = char_freq.get(char, 0) + 1
-            
-            # Check if any character appears more than 30% of the time
             total_alnum = sum(char_freq.values())
             if total_alnum > 0:
                 for char, count in char_freq.items():
                     if count / total_alnum > 0.3:
-                        self.suspicious_patterns.append((f"High frequency character: '{char}' ({count/total_alnum*100:.1f}%)", source))
+                        self.suspicious_patterns.append(
+                            (f"High frequency character: '{char}' ({count/total_alnum*100:.1f}%)", source)
+                        )
                         break
-        
-        # Detect potential steganography markers
+
         stego_markers = ['BEGIN', 'END', 'HIDDEN', 'EMBEDDED', 'STEALTH', 'COVERT']
         for marker in stego_markers:
             if marker in text.upper():
-                context_start = max(0, text.upper().find(marker) - 20)
-                context_end = min(len(text), text.upper().find(marker) + len(marker) + 20)
-                context = text[context_start:context_end]
+                ctx_start = max(0, text.upper().find(marker) - 20)
+                ctx_end   = min(len(text), text.upper().find(marker) + len(marker) + 20)
+                context   = text[ctx_start:ctx_end]
                 self.suspicious_patterns.append((f"Steganography marker '{marker}': {context}", source))
 
     def _scan_extracted_files(self, extract_dir, tool_name, max_depth=3, current_depth=0):
+        """Light scan of extracted files (strings + content). Deep analysis via _analyze_file."""
         flags_found = []
         has_strings = self.tool_status.get('strings', False)
-        
+
         if current_depth >= max_depth:
             return flags_found
-        
+
         for root, dirs, files in os.walk(extract_dir):
             for file in files:
                 file_path = os.path.join(root, file)
                 file_source = f"{tool_name} -> {os.path.relpath(file_path, extract_dir)}"
-                
+
                 try:
                     file_size = os.path.getsize(file_path)
                     if file_size == 0:
                         continue
-                    
-                    # Skip very large files (> 50MB) to avoid memory issues
                     if file_size > 50 * 1024 * 1024:
                         continue
-                    
+
                     with open(file_path, 'rb') as f:
                         raw_data = f.read()
-                    
-                    # Check if it's a nested archive/image that binwalk can extract
-                    file_ext = os.path.splitext(file_path)[1].lower()
-                    nested_extractable = file_ext in ['.zip', '.tar', '.gz', '.bz2', '.7z', '.rar', '.png', '.jpg', '.jpeg', '.bmp', '.gif']
-                    
-                    if nested_extractable and self.tool_status.get('binwalk', False) and current_depth < max_depth - 1:
-                        # Try to extract nested files
-                        with tempfile.TemporaryDirectory() as nested_temp:
-                            try:
-                                nested_stdout, nested_stderr, nested_code = self.run_command(
-                                    ['binwalk', '-e', '-C', nested_temp, file_path],
-                                    f"Extracting nested file: {file}"
-                                )
-                                
-                                # Scan the nested extraction
-                                nested_flags = self._scan_extracted_files(nested_temp, f"{tool_name}/{file}", max_depth, current_depth + 1)
-                                if nested_flags:
-                                    flags_found.extend(nested_flags)
-                            except Exception:
-                                pass
-                    
-                    # Scan file content with strings or direct read
+
+                    # Strings scan
                     if has_strings:
                         try:
                             stdout, stderr, code = self.run_command(
-                                ['strings', str(file_path)],
+                                ['strings', file_path],
                                 f"Scanning: {os.path.basename(file_path)}"
                             )
                             flags = self.search_flags_from_outputs(stdout, stderr, file_source)
@@ -478,17 +554,14 @@ class CTFuck:
                                 flags_found.extend(flags)
                         except Exception:
                             pass
-                    
-                    # Always try direct content read for better encoding detection
+
+                    # Direct content scan
                     try:
                         content = raw_data.decode('utf-8', errors='ignore')
                         if content.strip():
-                            # Direct flag search
                             flags = self.search_flags(content, file_source)
                             if flags:
                                 flags_found.extend(flags)
-                            
-                            # Encoded flag search
                             encoded_flags, interesting = self.find_encoded_flags(content, file_source)
                             if encoded_flags:
                                 flags_found.extend(encoded_flags)
@@ -496,19 +569,17 @@ class CTFuck:
                                 self.interesting_strings.extend(interesting)
                     except Exception:
                         pass
-                    
+
                 except Exception:
                     pass
-        
+
         return flags_found
 
     def _extract_metadata_info(self, metadata_output, source):
-        """Extract interesting information from metadata"""
         interesting_fields = [
-            'comment', 'description', 'author', 'creator', 'software', 
+            'comment', 'description', 'author', 'creator', 'software',
             'user comment', 'artist', 'copyright', 'keywords', 'subject'
         ]
-        
         for line in metadata_output.split('\n'):
             line_lower = line.lower()
             for field in interesting_fields:
@@ -518,22 +589,24 @@ class CTFuck:
                         value = parts[1].strip()
                         if value and len(value) > 3:
                             self.metadata_findings.append((f"{parts[0].strip()}: {value}", source))
-    
+
     def search_flags_from_outputs(self, stdout, stderr, source="unknown"):
         combined = f"{stdout}\n{stderr}"
         flags = self.search_flags(combined, source)
-        
         encoded_flags, interesting = self.find_encoded_flags(combined, source)
         flags.extend(encoded_flags)
-        
         if interesting:
             self.interesting_strings.extend(interesting)
-            
         return flags
-    
+
+    # ------------------------------------------------------------------
+    # Tool runners
+    # ------------------------------------------------------------------
+
     def scan(self):
-        console.print("\n[bold cyan]🔍 Scanning...[/bold cyan]")
-        
+        if self._depth == 0:
+            console.print("\n[bold cyan]🔍 Scanning...[/bold cyan]")
+
         self.run_strings()
         self.run_zsteg()
         self.run_exiftool()
@@ -542,7 +615,7 @@ class CTFuck:
         self.run_outguess()
         self.run_foremost()
         self.bruteforce_archives()
-    
+
     def run_strings(self):
         if not self.tool_status['strings']:
             return
@@ -555,7 +628,7 @@ class CTFuck:
         if flags:
             console.print(f"[green]✓ strings: {len(flags)} flag(s)[/green]")
             self.found_flags.extend(flags)
-    
+
     def run_zsteg(self):
         if not self.tool_status['zsteg']:
             return
@@ -570,7 +643,7 @@ class CTFuck:
         if flags:
             console.print(f"[green]✓ zsteg: {len(flags)} flag(s)[/green]")
             self.found_flags.extend(flags)
-    
+
     def run_exiftool(self):
         if not self.tool_status['exiftool']:
             return
@@ -579,27 +652,24 @@ class CTFuck:
             "exiftool",
             save_output=True
         )
-        
         if code == 0:
             flags = self.search_flags_from_outputs(stdout, stderr, "exiftool metadata")
             if flags:
                 console.print(f"[green]✓ exiftool: {len(flags)} flag(s)[/green]")
                 self.found_flags.extend(flags)
-            
-            # Extract interesting metadata
             self._extract_metadata_info(stdout, "exiftool")
-    
+
     def run_binwalk(self):
         if not self.tool_status['binwalk']:
             return
-        
+
         with tempfile.TemporaryDirectory() as temp_dir:
             stdout, stderr, code = self.run_command(
                 ['binwalk', '-e', '-C', temp_dir, str(self.file_path)],
                 "binwalk",
                 save_output=True
             )
-            
+
             flags = self.search_flags_from_outputs(stdout, stderr, "binwalk mapping")
             if flags:
                 console.print(f"[green]✓ binwalk: {len(flags)} flag(s)[/green]")
@@ -609,66 +679,101 @@ class CTFuck:
             if saved_path:
                 console.print(f"[dim]Saved extracted files: {saved_path}[/dim]")
 
+            # Light scan first
             extracted_flags = self._scan_extracted_files(temp_dir, "binwalk")
             if extracted_flags:
                 console.print(f"[green]✓ binwalk extracted: {len(extracted_flags)} flag(s)[/green]")
                 self.found_flags.extend(extracted_flags)
-    
+
+            # ── RECURSIVE: analyze every extracted file with all tools ──
+            if self._depth < self._max_depth:
+                for root, dirs, files in os.walk(temp_dir):
+                    for fname in files:
+                        fpath = os.path.join(root, fname)
+                        rec_flags, rec_interesting = self._analyze_file(fpath)
+                        if rec_flags:
+                            console.print(f"[green]✓ recursive ({fname}): {len(rec_flags)} flag(s)[/green]")
+                            self.found_flags.extend(rec_flags)
+                        if rec_interesting:
+                            self.interesting_strings.extend(rec_interesting)
+
     def run_steghide(self):
         if not self.tool_status['steghide']:
             return
-        
+
         if self.file_path.suffix.lower() not in ['.jpg', '.jpeg', '.bmp', '.wav', '.au']:
             return
-        
-        # First check if there's embedded data
+
+        # Info probe (empty password)
         stdout, stderr, code = self.run_command(
             f'steghide info "{self.file_path}" -p ""',
-            "steghide",
+            "steghide info",
             shell=True,
             save_output=True
         )
-        
+
         flags = self.search_flags_from_outputs(stdout, stderr, "steghide info")
         if flags:
             console.print(f"[green]✓ steghide: {len(flags)} flag(s)[/green]")
             self.found_flags.extend(flags)
-        
-        # Check if embedded file is detected
-        if 'embedded' in stdout.lower() or 'embedded' in stderr.lower():
-            console.print(f"[yellow]→ Bruteforcing steghide ({len(self.wordlist)} passwords)...[/yellow]")
-            
-            with tempfile.TemporaryDirectory() as temp_dir:
-                for idx, password in enumerate(self.wordlist, 1):
-                    output_file = os.path.join(temp_dir, 'steghide_extracted.bin')
-                    extract_cmd = f'steghide extract -sf "{self.file_path}" -xf "{output_file}" -p "{password}" -f'
-                    
-                    stdout_ex, stderr_ex, code_ex = self.run_command(
-                        extract_cmd,
-                        f"[{idx}/{len(self.wordlist)}] Trying: {'(empty)' if not password else password}",
-                        shell=True,
-                        silent=True
+
+        has_embedded = 'embedded' in stdout.lower() or 'embedded' in stderr.lower()
+
+        # Decide whether to brute-force
+        should_brute = has_embedded or self.auto_brute
+        if not should_brute:
+            return
+
+        wordlist_to_try = self.wordlist
+        mode_label = "auto-brute" if self.auto_brute else "wordlist"
+        console.print(
+            f"[yellow]→ Bruteforcing steghide ({len(wordlist_to_try)} passwords, {mode_label})...[/yellow]"
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_file = os.path.join(temp_dir, 'steghide_extracted.bin')
+            cracked = False
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TextColumn("[cyan]{task.completed}/{task.total}"),
+                TimeElapsedColumn(),
+                console=console,
+                transient=True,
+            ) as progress:
+                task = progress.add_task("steghide brute", total=len(wordlist_to_try))
+
+                for password in wordlist_to_try:
+                    progress.update(task, advance=1,
+                                    description=f"steghide: {'(empty)' if not password else password[:20]}")
+                    extract_cmd = (
+                        f'steghide extract -sf "{self.file_path}" '
+                        f'-xf "{output_file}" -p "{password}" -f'
                     )
-                    
+                    stdout_ex, stderr_ex, code_ex = self.run_command(
+                        extract_cmd, "", shell=True, silent=True
+                    )
+
                     if code_ex == 0 and os.path.exists(output_file) and os.path.getsize(output_file) > 0:
-                        console.print(f"[green]✓ steghide extracted with password: {'(empty)' if not password else password}[/green]")
+                        console.print(
+                            f"[green]✓ steghide password found: "
+                            f"{'(empty)' if not password else password}[/green]"
+                        )
                         saved_path = self._persist_extracted_files(temp_dir, "steghide")
                         if saved_path:
                             console.print(f"[dim]Saved extracted files: {saved_path}[/dim]")
-                        
-                        # Read and scan extracted content
+
+                        # Scan extracted content
                         try:
                             with open(output_file, 'rb') as f:
-                                content = f.read()
-                            
-                            # Try to decode as text
-                            text_content = content.decode('utf-8', errors='ignore')
+                                content_bytes = f.read()
+                            text_content = content_bytes.decode('utf-8', errors='ignore')
                             flags_ex = self.search_flags(text_content, "steghide extracted")
                             if flags_ex:
                                 console.print(f"[green]✓ steghide extracted: {len(flags_ex)} flag(s)[/green]")
                                 self.found_flags.extend(flags_ex)
-                            
-                            # Also check for encoded flags
                             encoded_flags, interesting = self.find_encoded_flags(text_content, "steghide extracted")
                             if encoded_flags:
                                 self.found_flags.extend(encoded_flags)
@@ -676,33 +781,132 @@ class CTFuck:
                                 self.interesting_strings.extend(interesting)
                         except Exception:
                             pass
-                        
+
+                        # ── RECURSIVE: re-analyze extracted file ──
+                        rec_flags, rec_interesting = self._analyze_file(output_file)
+                        if rec_flags:
+                            console.print(f"[green]✓ recursive (steghide output): {len(rec_flags)} flag(s)[/green]")
+                            self.found_flags.extend(rec_flags)
+                        if rec_interesting:
+                            self.interesting_strings.extend(rec_interesting)
+
+                        cracked = True
                         break
-                else:
-                    console.print("[red]✗ Steghide bruteforce failed - try custom wordlist with -w[/red]")
+
+            if not cracked:
+                console.print("[red]✗ Steghide bruteforce failed — try custom wordlist with -w[/red]")
 
     def run_outguess(self):
         if not self.tool_status['outguess']:
             return
-
         if self.file_path.suffix.lower() not in ['.jpg', '.jpeg']:
             return
 
-        stdout, stderr, code = self.run_command(
-            ['outguess', '-r', str(self.file_path), '/dev/stdout'],
-            "outguess",
-            save_output=True
-        )
+        # No-password attempt
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out_file = os.path.join(temp_dir, 'outguess_out.txt')
+            stdout, stderr, code = self.run_command(
+                ['outguess', '-r', str(self.file_path), out_file],
+                "outguess",
+                save_output=True
+            )
 
-        flags = self.search_flags_from_outputs(stdout, stderr, "outguess output")
-        if flags:
-            console.print(f"[green]✓ outguess: {len(flags)} flag(s)[/green]")
-            self.found_flags.extend(flags)
-    
+            flags = self.search_flags_from_outputs(stdout, stderr, "outguess output")
+            if flags:
+                console.print(f"[green]✓ outguess: {len(flags)} flag(s)[/green]")
+                self.found_flags.extend(flags)
+
+            if os.path.exists(out_file) and os.path.getsize(out_file) > 0:
+                try:
+                    with open(out_file, 'rb') as f:
+                        content = f.read().decode('utf-8', errors='ignore')
+                    flags_f = self.search_flags(content, "outguess extracted")
+                    if flags_f:
+                        console.print(f"[green]✓ outguess file: {len(flags_f)} flag(s)[/green]")
+                        self.found_flags.extend(flags_f)
+                    # ── RECURSIVE ──
+                    rec_flags, rec_interesting = self._analyze_file(out_file)
+                    if rec_flags:
+                        self.found_flags.extend(rec_flags)
+                    if rec_interesting:
+                        self.interesting_strings.extend(rec_interesting)
+                except Exception:
+                    pass
+
+        # Brute-force outguess if enabled
+        if self.auto_brute:
+            self._brute_outguess()
+
+    def _brute_outguess(self):
+        """Brute-force outguess with the full wordlist (activated via --auto-brute)."""
+        console.print(
+            f"[yellow]→ Bruteforcing outguess ({len(self.wordlist)} passwords)...[/yellow]"
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cracked = False
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TextColumn("[cyan]{task.completed}/{task.total}"),
+                TimeElapsedColumn(),
+                console=console,
+                transient=True,
+            ) as progress:
+                task = progress.add_task("outguess brute", total=len(self.wordlist))
+
+                for password in self.wordlist:
+                    progress.update(task, advance=1,
+                                    description=f"outguess: {'(empty)' if not password else password[:20]}")
+                    if not password:
+                        continue  # already tried no-password above
+
+                    out_file = os.path.join(temp_dir, f'og_{abs(hash(password))}.txt')
+                    stdout_og, stderr_og, code_og = self.run_command(
+                        ['outguess', '-k', password, '-r', str(self.file_path), out_file],
+                        "", silent=True
+                    )
+
+                    extracted_ok = (
+                        code_og == 0
+                        and os.path.exists(out_file)
+                        and os.path.getsize(out_file) > 0
+                    )
+                    if extracted_ok:
+                        console.print(f"[green]✓ outguess password found: {password}[/green]")
+                        try:
+                            with open(out_file, 'rb') as f:
+                                content = f.read().decode('utf-8', errors='ignore')
+                            flags_og = self.search_flags(content, "outguess brute extracted")
+                            if flags_og:
+                                console.print(f"[green]✓ outguess brute: {len(flags_og)} flag(s)[/green]")
+                                self.found_flags.extend(flags_og)
+                            encoded_flags, interesting = self.find_encoded_flags(content, "outguess brute extracted")
+                            if encoded_flags:
+                                self.found_flags.extend(encoded_flags)
+                            if interesting:
+                                self.interesting_strings.extend(interesting)
+                        except Exception:
+                            pass
+
+                        # ── RECURSIVE ──
+                        rec_flags, rec_interesting = self._analyze_file(out_file)
+                        if rec_flags:
+                            self.found_flags.extend(rec_flags)
+                        if rec_interesting:
+                            self.interesting_strings.extend(rec_interesting)
+
+                        cracked = True
+                        break
+
+            if not cracked:
+                console.print("[red]✗ Outguess bruteforce failed — try custom wordlist with -w[/red]")
+
     def run_foremost(self):
         if not self.tool_status['foremost']:
             return
-        
+
         with tempfile.TemporaryDirectory() as temp_dir:
             stdout, stderr, code = self.run_command(
                 ['foremost', '-i', str(self.file_path), '-o', temp_dir],
@@ -718,53 +922,97 @@ class CTFuck:
             if extracted_flags:
                 console.print(f"[green]✓ foremost: {len(extracted_flags)} flag(s)[/green]")
                 self.found_flags.extend(extracted_flags)
-    
+
+            # ── RECURSIVE: analyze every extracted file with all tools ──
+            if self._depth < self._max_depth:
+                for root, dirs, files in os.walk(temp_dir):
+                    for fname in files:
+                        fpath = os.path.join(root, fname)
+                        rec_flags, rec_interesting = self._analyze_file(fpath)
+                        if rec_flags:
+                            console.print(f"[green]✓ recursive ({fname}): {len(rec_flags)} flag(s)[/green]")
+                            self.found_flags.extend(rec_flags)
+                        if rec_interesting:
+                            self.interesting_strings.extend(rec_interesting)
+
     def bruteforce_archives(self):
-        """Bruteforce password-protected archives (zip, rar)"""
+        """Bruteforce password-protected archives."""
         file_ext = self.file_path.suffix.lower()
-        
         if file_ext == '.zip':
             self._bruteforce_zip()
-    
+
     def _bruteforce_zip(self):
-        """Bruteforce ZIP file passwords"""
+        """Bruteforce ZIP file passwords."""
         try:
             with zipfile.ZipFile(self.file_path, 'r') as zf:
-                # Check if password protected
                 for info in zf.infolist():
                     if info.flag_bits & 0x1:  # Password protected
-                        console.print(f"[yellow]→ Bruteforcing ZIP ({len(self.wordlist)} passwords)...[/yellow]")
-                        
-                        for idx, password in enumerate(self.wordlist, 1):
-                            try:
-                                pwd_bytes = password.encode('utf-8')
-                                zf.extractall(pwd=pwd_bytes, path=tempfile.gettempdir())
-                                console.print(f"[green]✓ ZIP password found: {password if password else '(empty)'}[/green]")
-                                
-                                # Extract and scan contents
-                                with tempfile.TemporaryDirectory() as temp_dir:
-                                    zf.extractall(pwd=pwd_bytes, path=temp_dir)
-                                    extracted_flags = self._scan_extracted_files(temp_dir, "zip")
-                                    if extracted_flags:
-                                        console.print(f"[green]✓ zip: {len(extracted_flags)} flag(s)[/green]")
-                                        self.found_flags.extend(extracted_flags)
-                                return
-                            except (RuntimeError, zipfile.BadZipFile):
-                                continue
-                            except Exception:
-                                continue
-                        
-                        console.print("[red]✗ ZIP bruteforce failed - try custom wordlist with -w[/red]")
+                        console.print(
+                            f"[yellow]→ Bruteforcing ZIP ({len(self.wordlist)} passwords)...[/yellow]"
+                        )
+
+                        with Progress(
+                            SpinnerColumn(),
+                            TextColumn("[progress.description]{task.description}"),
+                            BarColumn(),
+                            TextColumn("[cyan]{task.completed}/{task.total}"),
+                            TimeElapsedColumn(),
+                            console=console,
+                            transient=True,
+                        ) as progress:
+                            task = progress.add_task("zip brute", total=len(self.wordlist))
+                            cracked = False
+
+                            for password in self.wordlist:
+                                progress.update(task, advance=1,
+                                                description=f"zip: {'(empty)' if not password else password[:20]}")
+                                try:
+                                    pwd_bytes = password.encode('utf-8')
+                                    with tempfile.TemporaryDirectory() as temp_dir:
+                                        zf.extractall(pwd=pwd_bytes, path=temp_dir)
+                                    console.print(
+                                        f"[green]✓ ZIP password found: {password if password else '(empty)'}[/green]"
+                                    )
+                                    with tempfile.TemporaryDirectory() as temp_dir:
+                                        zf.extractall(pwd=pwd_bytes, path=temp_dir)
+                                        extracted_flags = self._scan_extracted_files(temp_dir, "zip")
+                                        if extracted_flags:
+                                            console.print(f"[green]✓ zip: {len(extracted_flags)} flag(s)[/green]")
+                                            self.found_flags.extend(extracted_flags)
+
+                                        # ── RECURSIVE ──
+                                        if self._depth < self._max_depth:
+                                            for root, dirs, files in os.walk(temp_dir):
+                                                for fname in files:
+                                                    fpath = os.path.join(root, fname)
+                                                    rec_flags, rec_interesting = self._analyze_file(fpath)
+                                                    if rec_flags:
+                                                        self.found_flags.extend(rec_flags)
+                                                    if rec_interesting:
+                                                        self.interesting_strings.extend(rec_interesting)
+                                    cracked = True
+                                    break
+                                except (RuntimeError, zipfile.BadZipFile):
+                                    continue
+                                except Exception:
+                                    continue
+
+                        if not cracked:
+                            console.print("[red]✗ ZIP bruteforce failed — try custom wordlist with -w[/red]")
                         break
         except zipfile.BadZipFile:
             pass
         except Exception:
             pass
-    
+
+    # ------------------------------------------------------------------
+    # Results
+    # ------------------------------------------------------------------
+
     def show_results(self):
         console.print("\n[bold cyan]═══ Results ═══[/bold cyan]")
-        
-        # Remove duplicates while preserving tuple structure
+
+        # Deduplicate
         seen_flags = set()
         unique_flags = []
         for item in self.found_flags:
@@ -772,7 +1020,7 @@ class CTFuck:
             if flag_text not in seen_flags:
                 seen_flags.add(flag_text)
                 unique_flags.append(item)
-        
+
         seen_interesting = set()
         unique_interesting = []
         for item in self.interesting_strings:
@@ -781,20 +1029,15 @@ class CTFuck:
                 seen_interesting.add(data_text)
                 unique_interesting.append(item)
 
-        actionable_interesting = []
         actionable_tags = (
-            "[CTF Keyword]",
-            "[Credentials]",
-            "[Access Info]",
-            "[URL]",
-            "[File Path]",
-            "[Code/Command]",
+            "[CTF Keyword]", "[Credentials]", "[Access Info]",
+            "[URL]", "[File Path]", "[Code/Command]",
         )
-        for item in unique_interesting:
-            source_text = item[1] if isinstance(item, tuple) else "unknown"
-            if any(tag in source_text for tag in actionable_tags):
-                actionable_interesting.append(item)
-        
+        actionable_interesting = [
+            item for item in unique_interesting
+            if any(tag in (item[1] if isinstance(item, tuple) else "") for tag in actionable_tags)
+        ]
+
         seen_metadata = set()
         unique_metadata = []
         for item in self.metadata_findings:
@@ -802,53 +1045,61 @@ class CTFuck:
             if data_text not in seen_metadata:
                 seen_metadata.add(data_text)
                 unique_metadata.append(item)
-        
+
         # Flags
         if unique_flags:
             console.print(f"\n[bold green]🎯 Flags ({len(unique_flags)}):[/bold green]")
             for item in unique_flags:
-                flag_text = item[0] if isinstance(item, tuple) else item
+                flag_text   = item[0] if isinstance(item, tuple) else item
                 source_text = item[1] if isinstance(item, tuple) else "unknown"
                 console.print(f"  [green]•[/green] {flag_text} [dim]({source_text})[/dim]")
         else:
             console.print("\n[yellow]No flags found[/yellow]")
-            
+
         # Interesting
         if actionable_interesting:
             console.print(f"\n[bold yellow]🔍 Interesting ({len(actionable_interesting)}):[/bold yellow]")
             for item in actionable_interesting[:5]:
-                data_text = item[0] if isinstance(item, tuple) else item
+                data_text   = item[0] if isinstance(item, tuple) else item
                 source_text = item[1] if isinstance(item, tuple) else "unknown"
                 console.print(f"  [yellow]•[/yellow] {data_text[:80]}... [dim]({source_text})[/dim]")
             if len(actionable_interesting) > 5:
                 console.print(f"  [dim]... and {len(actionable_interesting) - 5} more[/dim]")
-        
+
         # Metadata
         if unique_metadata:
             console.print(f"\n[bold magenta]📋 Metadata ({len(unique_metadata)}):[/bold magenta]")
             for item in unique_metadata[:3]:
-                field_text = item[0] if isinstance(item, tuple) else item
+                field_text  = item[0] if isinstance(item, tuple) else item
                 source_text = item[1] if isinstance(item, tuple) else "unknown"
                 console.print(f"  [magenta]•[/magenta] {field_text[:80]} [dim]({source_text})[/dim]")
             if len(unique_metadata) > 3:
                 console.print(f"  [dim]... and {len(unique_metadata) - 3} more[/dim]")
-        
-        # If no flags found, offer to show raw tool outputs
+
+        # Offer raw output if nothing found
         if not unique_flags:
-            if Confirm.ask("\n[yellow]No flags found. Do you want to see raw tool outputs?[/yellow]", default=False):
+            if Confirm.ask(
+                "\n[yellow]No flags found. Do you want to see raw tool outputs?[/yellow]",
+                default=False
+            ):
                 for tool_name, stdout, stderr in self.tool_outputs:
                     combined = f"{stdout}\n{stderr}".strip()
                     if combined:
                         console.print(f"\n[bold cyan]═══ {tool_name} ═══[/bold cyan]")
                         console.print(combined, highlight=False)
-        
+
         console.print()
-    
+
     def run(self):
         self.show_banner()
         self.show_tool_status()
         self.scan()
         self.show_results()
+
+
+# ---------------------------------------------------------------------------
+# CLI Entry Point
+# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
@@ -856,35 +1107,52 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  ctfuck image.png -f "FLAG{"
-  ctfuck image.png -f "CTF{" -w /usr/share/wordlists/rockyou.txt
+  ctfuck image.png  -f "FLAG{"
+  ctfuck image.jpg  -f "CTF{"  -w /usr/share/wordlists/rockyou.txt
+  ctfuck image.jpg  -f "CTF{"  -b
   ctfuck archive.zip -f "flag{"
         """
     )
-    
+
     parser.add_argument(
         'file',
         help='File to analyze'
     )
-    
+
     parser.add_argument(
         '-f', '--flag-format',
         required=True,
         help='Flag format to search (e.g., "FLAG{", "CTF{")'
     )
-    
+
     parser.add_argument(
         '-w', '--wordlist',
         help='Custom wordlist file for bruteforce attacks'
     )
-    
+
+    parser.add_argument(
+        '-b', '--auto-brute',
+        action='store_true',
+        default=False,
+        help='Enable auto brute-force for steghide and outguess using the embedded wordlist (or -w)'
+    )
+
+    parser.add_argument(
+        '-d', '--depth',
+        type=int,
+        default=3,
+        help='Maximum recursion depth for nested file analysis (default: 3)'
+    )
+
     args = parser.parse_args()
-    
+
     try:
         ctfuck = CTFuck(
             file_path=args.file,
             flag_format=args.flag_format,
             wordlist=args.wordlist,
+            auto_brute=args.auto_brute,
+            max_recursion_depth=args.depth,
         )
         ctfuck.run()
     except KeyboardInterrupt:
@@ -893,6 +1161,7 @@ Examples:
     except Exception as e:
         console.print(f"\n[bold red]✗ Error: {str(e)}[/bold red]")
         exit(1)
+
 
 if __name__ == '__main__':
     main()

@@ -83,4 +83,6 @@ cp "$ROOT_DIR"/ctfuck.py /opt/ctfuck/
 cp "$ROOT_DIR"/requirements.txt /opt/ctfuck/ 2>/dev/null || true
 
 success "Installation complete: 'ctfuck' command ready"
-info "Usage: ctfuck <file> -f FLAG{ [-w wordlist.txt]"
+info "Usage: ctfuck <file> -f FLAG{ [-w wordlist.txt] [-b] [-d depth]"
+info "  -b   auto brute-force steghide & outguess (built-in ~150 passwords)"
+info "  -d   max recursion depth for nested stego files (default: 3)"
