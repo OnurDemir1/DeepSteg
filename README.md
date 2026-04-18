@@ -10,52 +10,39 @@ cd CTFuck
 sudo ./install.sh
 ```
 
-This installs Python dependencies, auto-installs missing external tools (strings, exiftool, binwalk, steghide, outguess, foremost, zsteg), and registers a global `ctfuck` command.
+This scripts installs Python dependencies, missing tools (strings, exiftool, binwalk, steghide, outguess, foremost, zsteg), and adds a global `ctfuck` command.
 
 ## Usage
 
 ```bash
-ctfuck <file> -f <flag_format> [options]
+ctfuck <file>
 ```
 
-**Required:**
-- `-f, --flag-format` — Flag prefix to search (e.g. `FLAG{`, `CTF{`)
+By default, CTFuck uses its **Smart Auto Scan** mode. It searches for 25 common CTF flag formats (like `SiberVatan{`, `CTF{`, `FLAG{`) simultaneously and runs in an escalating, interactive loop:
 
-**Optional:**
-- `-w, --wordlist` — Custom wordlist file for bruteforce attacks (e.g. rockyou.txt)
-- `-b, --auto-brute` — Auto brute-force steghide & outguess using the built-in ~150-password wordlist (or `-w` if provided)
-- `-d, --depth` — Maximum recursion depth for nested file analysis (default: `3`)
+1. **Fast Analysis:** Runs lightweight tools (`strings`, `zsteg`, `exiftool`, `binwalk`). If a flag is found, it pauses and asks if you want to continue deeper.
+2. **Auto Brute-Force:** Runs `steghide` and `outguess` using a built-in list of ~150 common stego passwords.
+3. **Deep Recursion:** Re-analyzes extracted nested files automatically (default depth 3).
 
-## Examples
+### Options
+
+If you want to customize the behavior:
 
 ```bash
-# Basic scan
-ctfuck test.png -f "FLAG{"
-
-# With custom wordlist
-ctfuck image.jpg -f "CTF{" -w /usr/share/wordlists/rockyou.txt
-
-# Auto brute-force with built-in wordlist
-ctfuck image.jpg -f "CTF{" -b
-
-# Full attack: custom wordlist + auto-brute + deeper recursion
-ctfuck image.jpg -f "CTF{" -w /usr/share/wordlists/rockyou.txt -b -d 5
-
-# Archive
-ctfuck archive.zip -f "flag{"
+ctfuck <file> -f "CUSTOM{" -w rockyou.txt -d 5
 ```
+
+- `-f, --flag-format` — Search for a specific flag prefix only
+- `-w, --wordlist` — Use a custom wordlist file for bruteforce attacks
+- `-d, --depth` — Max recursion depth for nested file analysis (default 3, hard-limit 10)
+- `-b, --auto-brute` — Explicitly enable brute-force (Already active in smart mode by default!)
 
 ## What it does
 
-Runs all available tools against the target file and reports every matching flag with its source:
-
-- `strings` · `zsteg` · `exiftool` · `binwalk` · `steghide` · `outguess` · `foremost`
-- Encoded flag detection (Base64, Hex, ROT13, URL, Binary, Base32, Octal, ASCII, etc.)
-- **Recursive extraction**: files extracted by binwalk / foremost / steghide / outguess are automatically re-analyzed with all tools (nested stego support, configurable depth)
-- **Auto brute-force** (`-b`): tries ~150 common CTF/stego passwords against steghide and outguess with a Rich progress bar
-- Steghide & ZIP bruteforce with custom wordlist support via `-w`
-- Duplicate detection via SHA-256 prevents infinite loops in circular archives
-- Extracted files saved to `ctfuck_output_<stem>/` for manual inspection
+Runs and orchestrates standard tools against the target.
+- Tools: `strings`, `zsteg`, `exiftool`, `binwalk`, `steghide`, `outguess`, `foremost`.
+- Extracts files recursively into `ctfuck_output_<file>/` and re-analyzes them (nested stego support).
+- Defends against infinite loops (via SHA-256 caching) and zip-bombs.
 
 ## Disclaimer
 

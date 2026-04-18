@@ -1263,27 +1263,16 @@ Examples:
 
     args = parser.parse_args()
 
-    # ── Validate / clamp --depth ─────────────────────────────────────
-    # Each recursion level adds ~15-20 Python frames. The CPython default
-    # call-stack limit is 1000, so values much above 10 would cause a
-    # RecursionError — which is caught inside _analyze_file, but it's
-    # cleaner to reject nonsense values upfront.
     if args.depth < 1:
         args.depth = 1
         console.print("[yellow]⚠ --depth must be ≥ 1, clamped to 1[/yellow]")
     elif args.depth > _MAX_RECURSION_DEPTH_HARD_CAP:
-        console.print(
-            f"[yellow]⚠ --depth {args.depth} exceeds hard cap {_MAX_RECURSION_DEPTH_HARD_CAP}. "
-            f"Clamped to {_MAX_RECURSION_DEPTH_HARD_CAP}.  "
-            f"(Legitimate nested-stego CTFs never need more than 5-6 levels.)[/yellow]"
-        )
+        console.print(f"[yellow]⚠ Clamped depth to {_MAX_RECURSION_DEPTH_HARD_CAP}.[/yellow]")
         args.depth = _MAX_RECURSION_DEPTH_HARD_CAP
 
-    # ── Akıllı Tarama (Smart Mode) ───────────────────────────────────
     formats = [args.flag_format] if args.flag_format else DEFAULT_FLAG_FORMATS
     
     try:
-        # 1. Aşama: Hızlı araçlar + Binwalk/Foremost (şifre denemesi yok)
         c1 = CTFuck(
             file_path=args.file,
             flag_formats=formats,
