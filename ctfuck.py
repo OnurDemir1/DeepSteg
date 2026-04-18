@@ -45,6 +45,13 @@ _MAX_RECURSION_DEPTH_HARD_CAP = 10
 _ZIP_BOMB_RATIO = 100          # 100x compression ratio threshold
 _ZIP_BOMB_MAX_BYTES = 200 * 1024 * 1024  # never extract more than 200 MB total
 
+DEFAULT_FLAG_FORMATS = [
+    "SiberVatan{", "CTF{", "FLAG{", "flag{", "ctf{", "picoCTF{", "DUCTF{", 
+    "HTB{", "THM{", "CSAW{", "DarkCTF{", "RITSEC{", "TUCTF{", "nactf{", 
+    "zer0pts{", "BCACTF{", "DCTF{", "wectf{", "zh3r0{", "justCTF{", 
+    "X-MAS{", "cybrics{", "SquareCTF{", "WPICTF{", "BYUCTF{"
+]
+
 console = Console()
 
 BANNER = "CTFuck - Steganography Automation Tool"
@@ -114,11 +121,15 @@ class ToolChecker:
 
 
 class CTFuck:
-    def __init__(self, file_path, flag_format, wordlist=None, auto_brute=False,
-                 max_recursion_depth=3, _depth=0, _visited=None):
+    def __init__(self, file_path, flag_formats, wordlist=None, auto_brute=False,
+                 max_recursion_depth=3, _depth=0, _visited=None, quiet=False):
         self.file_path = Path(file_path)
-        self.flag_format = flag_format.strip()
-        self.flag_patterns = self._build_flag_patterns(self.flag_format)
+        if isinstance(flag_formats, str):
+            self.flag_formats = [f.strip() for f in flag_formats.split(',') if f.strip()]
+        else:
+            self.flag_formats = [f.strip() for f in flag_formats]
+        self.flag_patterns = self._build_flag_patterns(self.flag_formats)
+        self.quiet = quiet
         self.found_flags = []
         self.interesting_strings = []
         self.suspicious_patterns = []
@@ -191,24 +202,25 @@ class CTFuck:
 
         return destination_root
 
-    def _build_flag_patterns(self, flag_format):
+    def _build_flag_patterns(self, flag_formats):
         patterns = []
-        escaped_prefix = re.escape(flag_format)
-        patterns.append(re.compile(rf"{escaped_prefix}[^\r\n\t ]{{0,300}}}}", re.IGNORECASE))
-        patterns.append(re.compile(rf"{escaped_prefix}.{{0,300}}?}}", re.DOTALL | re.IGNORECASE))
+        for fmt in flag_formats:
+            escaped_prefix = re.escape(fmt)
+            patterns.append(re.compile(rf"{escaped_prefix}[^\r\n\t ]{{0,300}}}}", re.IGNORECASE))
+            patterns.append(re.compile(rf"{escaped_prefix}.{{0,300}}?}}", re.DOTALL | re.IGNORECASE))
 
-        variations = {flag_format, flag_format.upper(), flag_format.lower(), flag_format.swapcase()}
-        for variant in variations:
-            if variant != flag_format:
-                escaped_variant = re.escape(variant)
-                patterns.append(re.compile(rf"{escaped_variant}[^\r\n\t ]{{0,300}}}}", ))
+            variations = {fmt, fmt.upper(), fmt.lower(), fmt.swapcase()}
+            for variant in variations:
+                if variant != fmt:
+                    escaped_variant = re.escape(variant)
+                    patterns.append(re.compile(rf"{escaped_variant}[^\r\n\t ]{{0,300}}}}", ))
 
-        regex_like_tokens = (".*", ".+", "[", "(", "\\d", "\\w", "\\s", "|")
-        if any(token in flag_format for token in regex_like_tokens):
-            try:
-                patterns.append(re.compile(flag_format, re.IGNORECASE))
-            except re.error:
-                pass
+            regex_like_tokens = (".*", ".+", "[", "(", "\\d", "\\w", "\\s", "|")
+            if any(token in fmt for token in regex_like_tokens):
+                try:
+                    patterns.append(re.compile(fmt, re.IGNORECASE))
+                except re.error:
+                    pass
 
         return patterns
 
@@ -292,12 +304,13 @@ class CTFuck:
         try:
             sub = CTFuck(
                 file_path=str(fp),
-                flag_format=self.flag_format,
+                flag_formats=self.flag_formats,
                 wordlist=self._wordlist_path,
                 auto_brute=self.auto_brute,
                 max_recursion_depth=self._max_depth,
                 _depth=depth,
                 _visited=self._visited,
+                quiet=self.quiet
             )
             sub.scan()
             return sub.found_flags, sub.interesting_strings
@@ -1194,10 +1207,12 @@ class CTFuck:
         console.print()
 
     def run(self):
-        self.show_banner()
-        self.show_tool_status()
+        if not self.quiet:
+            self.show_banner()
+            self.show_tool_status()
         self.scan()
-        self.show_results()
+        if not self.quiet:
+            self.show_results()
 
 
 # ---------------------------------------------------------------------------
@@ -1224,8 +1239,7 @@ Examples:
 
     parser.add_argument(
         '-f', '--flag-format',
-        required=True,
-        help='Flag format to search (e.g., "FLAG{", "CTF{")'
+        help='Ozel flag formati. Eger verilmezse otomatik olarak yaygin 25 format taranir.'
     )
 
     parser.add_argument(
@@ -1265,15 +1279,59 @@ Examples:
         )
         args.depth = _MAX_RECURSION_DEPTH_HARD_CAP
 
+    # ── Akıllı Tarama (Smart Mode) ───────────────────────────────────
+    formats = [args.flag_format] if args.flag_format else DEFAULT_FLAG_FORMATS
+    
     try:
-        ctfuck = CTFuck(
+        # 1. Aşama: Hızlı araçlar + Binwalk/Foremost (şifre denemesi yok)
+        c1 = CTFuck(
             file_path=args.file,
-            flag_format=args.flag_format,
+            flag_formats=formats,
             wordlist=args.wordlist,
-            auto_brute=args.auto_brute,
-            max_recursion_depth=args.depth,
+            auto_brute=False,
+            max_recursion_depth=1
         )
-        ctfuck.run()
+        console.print("\n[bold cyan]━━━ Aşama 1: Temel Analiz (Brute-Force Yok) ━━━[/bold cyan]")
+        c1.run()
+
+        if c1.found_flags:
+            if not Confirm.ask("\n[bold yellow]Flags found! Devam etmek ve şifre kırma (Brute-Force) aşamasına geçmek ister misin?[/bold yellow]", default=False):
+                console.print("\n[green]İyi CTF'ler! 🚀[/green]")
+                return
+
+        # 2. Aşama: Şifre Kırma (Brute Force) + Hafif Derinlik
+        c2 = CTFuck(
+            file_path=args.file,
+            flag_formats=formats,
+            wordlist=args.wordlist,
+            auto_brute=True,
+            max_recursion_depth=1,
+            quiet=True
+        )
+        console.print("\n[bold cyan]━━━ Aşama 2: Şifre Kırma (Steghide, Outguess, Zip) ━━━[/bold cyan]")
+        c2.scan()
+        c2.show_results()
+
+        if c2.found_flags and len(c2.found_flags) > len(c1.found_flags):
+            if not Confirm.ask("\n[bold yellow]Yeni flags found! Derin özyinelemeli taramaya (Deep Recursion) geçmek ister misin?[/bold yellow]", default=False):
+                console.print("\n[green]İyi CTF'ler! 🚀[/green]")
+                return
+
+        # 3. Aşama: Derinlikli Özyineleme
+        if args.depth > 1:
+            c3 = CTFuck(
+                file_path=args.file,
+                flag_formats=formats,
+                wordlist=args.wordlist,
+                auto_brute=True,
+                max_recursion_depth=args.depth,
+                quiet=True
+            )
+            console.print(f"\n[bold cyan]━━━ Aşama 3: Derin Özyinelemeli Tarama (Depth: {args.depth}) ━━━[/bold cyan]")
+            c3.scan()
+            c3.show_results()
+
+        console.print("\n[bold green]✅ Tüm taramalar tamamlandı.[/bold green]")
     except KeyboardInterrupt:
         console.print("\n[bold red]✗ Interrupted[/bold red]")
         exit(1)
