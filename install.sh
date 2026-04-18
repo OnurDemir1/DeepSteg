@@ -82,7 +82,22 @@ mkdir -p /opt/ctfuck
 cp "$ROOT_DIR"/ctfuck.py /opt/ctfuck/
 cp "$ROOT_DIR"/requirements.txt /opt/ctfuck/ 2>/dev/null || true
 
-success "Installation complete: 'ctfuck' command ready"
-info "Usage: ctfuck <file> -f FLAG{ [-w wordlist.txt] [-b] [-d depth]"
-info "  -b   auto brute-force steghide & outguess (built-in ~150 passwords)"
-info "  -d   max recursion depth for nested stego files (default: 3)"
+info "Installing ctfuck-smart.sh..."
+cp "$ROOT_DIR"/ctfuck-smart.sh /opt/ctfuck/
+chmod +x /opt/ctfuck/ctfuck-smart.sh
+
+# Global shortcut for smart scanner
+cat > /usr/local/bin/ctfuck-smart << 'EOF'
+#!/usr/bin/env bash
+exec bash /opt/ctfuck/ctfuck-smart.sh "$@"
+EOF
+chmod +x /usr/local/bin/ctfuck-smart
+
+success "Installation complete!"
+info "Commands:"
+info "  ctfuck <file> -f FLAG{                  → Manuel tarama"
+info "  ctfuck <file> -f FLAG{ -b               → + brute-force"
+info "  ctfuck <file> -f FLAG{ -b -d 5          → + derin analiz"
+info "  ctfuck-smart <file>                      → Akıllı otomatik tarama (25 format, 4 seviye)"
+info "  ctfuck-smart <file> -f CTF{              → Belirli format ile akıllı tarama"
+info "  ctfuck-smart <file> -w rockyou.txt       → Custom wordlist ile akıllı tarama"
