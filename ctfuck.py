@@ -329,9 +329,10 @@ class CTFuck:
     def show_banner(self):
         console.print(f"\n[bold cyan]{BANNER}[/bold cyan]")
         brute_tag = " | [bold yellow]auto-brute ON[/bold yellow]" if self.auto_brute else ""
+        fmt_str = ", ".join(self.flag_formats) if len(self.flag_formats) < 4 else f"{len(self.flag_formats)} common formats"
         console.print(
             f"[dim]Target:[/dim] {self.file_path} | "
-            f"[dim]Flag:[/dim] {self.flag_format}"
+            f"[dim]Flags:[/dim] {fmt_str}"
             f"{brute_tag}\n"
         )
 
@@ -693,18 +694,36 @@ class CTFuck:
     # ------------------------------------------------------------------
     # Tool runners
     # ------------------------------------------------------------------
-
     def scan(self):
         if self._depth == 0:
             console.print("\n[bold cyan]🔍 Scanning...[/bold cyan]")
 
+        # 1. Fast Tools
         self.run_strings()
-        self.run_zsteg()
         self.run_exiftool()
+        self.run_zsteg()
+        
+        last_flag_count = len(self.found_flags)
+        if last_flag_count > 0 and self._depth == 0:
+            self.show_results()
+            if not Confirm.ask("\n[bold yellow]Flags found! Do you want to continue with Extraction (Binwalk/Foremost)?[/bold yellow]", default=False):
+                import sys
+                sys.exit(0)
+
+        # 2. Extraction & Recursion Tools
         self.run_binwalk()
+        self.run_foremost()
+        
+        if len(self.found_flags) > last_flag_count and self._depth == 0:
+            last_flag_count = len(self.found_flags)
+            self.show_results()
+            if not Confirm.ask("\n[bold yellow]New flags found through extraction! Do you want to continue with Password Brute-Force (Steghide/Outguess/Zip)?[/bold yellow]", default=False):
+                import sys
+                sys.exit(0)
+
+        # 3. Brute Force Tools
         self.run_steghide()
         self.run_outguess()
-        self.run_foremost()
         self.bruteforce_archives()
 
     def run_strings(self):
@@ -1265,62 +1284,24 @@ Examples:
 
     if args.depth < 1:
         args.depth = 1
-        console.print("[yellow]⚠ --depth must be ≥ 1, clamped to 1[/yellow]")
     elif args.depth > _MAX_RECURSION_DEPTH_HARD_CAP:
-        console.print(f"[yellow]⚠ Clamped depth to {_MAX_RECURSION_DEPTH_HARD_CAP}.[/yellow]")
         args.depth = _MAX_RECURSION_DEPTH_HARD_CAP
 
     formats = [args.flag_format] if args.flag_format else DEFAULT_FLAG_FORMATS
     
+    # Otomatik modda eger ozel olarak kapatilmadiyse brute force acilir
+    enable_brute = True if (not args.flag_format and not args.wordlist) else args.auto_brute
+    
     try:
-        c1 = CTFuck(
+        ctfuck = CTFuck(
             file_path=args.file,
             flag_formats=formats,
             wordlist=args.wordlist,
-            auto_brute=False,
-            max_recursion_depth=1
+            auto_brute=enable_brute,
+            max_recursion_depth=args.depth,
         )
-        console.print("\n[bold cyan]━━━ Aşama 1: Temel Analiz (Brute-Force Yok) ━━━[/bold cyan]")
-        c1.run()
+        ctfuck.run()
 
-        if c1.found_flags:
-            if not Confirm.ask("\n[bold yellow]Flags found! Devam etmek ve şifre kırma (Brute-Force) aşamasına geçmek ister misin?[/bold yellow]", default=False):
-                console.print("\n[green]İyi CTF'ler! 🚀[/green]")
-                return
-
-        # 2. Aşama: Şifre Kırma (Brute Force) + Hafif Derinlik
-        c2 = CTFuck(
-            file_path=args.file,
-            flag_formats=formats,
-            wordlist=args.wordlist,
-            auto_brute=True,
-            max_recursion_depth=1,
-            quiet=True
-        )
-        console.print("\n[bold cyan]━━━ Aşama 2: Şifre Kırma (Steghide, Outguess, Zip) ━━━[/bold cyan]")
-        c2.scan()
-        c2.show_results()
-
-        if c2.found_flags and len(c2.found_flags) > len(c1.found_flags):
-            if not Confirm.ask("\n[bold yellow]Yeni flags found! Derin özyinelemeli taramaya (Deep Recursion) geçmek ister misin?[/bold yellow]", default=False):
-                console.print("\n[green]İyi CTF'ler! 🚀[/green]")
-                return
-
-        # 3. Aşama: Derinlikli Özyineleme
-        if args.depth > 1:
-            c3 = CTFuck(
-                file_path=args.file,
-                flag_formats=formats,
-                wordlist=args.wordlist,
-                auto_brute=True,
-                max_recursion_depth=args.depth,
-                quiet=True
-            )
-            console.print(f"\n[bold cyan]━━━ Aşama 3: Derin Özyinelemeli Tarama (Depth: {args.depth}) ━━━[/bold cyan]")
-            c3.scan()
-            c3.show_results()
-
-        console.print("\n[bold green]✅ Tüm taramalar tamamlandı.[/bold green]")
     except KeyboardInterrupt:
         console.print("\n[bold red]✗ Interrupted[/bold red]")
         exit(1)
