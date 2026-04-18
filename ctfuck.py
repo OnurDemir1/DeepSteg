@@ -33,6 +33,18 @@ _TEXT_EXTENSIONS = {
     '.html', '.htm', '.cfg', '.ini', '.conf', '.py', '.sh',
 }
 
+# Hard cap on recursion depth. Values above this are clamped and warned.
+# Rationale: each depth level adds ~15-20 Python frames (CTFuck.__init__,
+# scan, run_binwalk, _analyze_file …). At depth 50 we're already well
+# inside the default CPython stack limit (1000 frames). Practically,
+# legitimate nested-stego CTF challenges never need more than 5-6 levels.
+_MAX_RECURSION_DEPTH_HARD_CAP = 10
+
+# Zip-bomb guard: if the total uncompressed size of a ZIP exceeds this
+# many times its compressed size we refuse to extract it.
+_ZIP_BOMB_RATIO = 100          # 100x compression ratio threshold
+_ZIP_BOMB_MAX_BYTES = 200 * 1024 * 1024  # never extract more than 200 MB total
+
 console = Console()
 
 BANNER = "CTFuck - Steganography Automation Tool"
@@ -225,12 +237,11 @@ class CTFuck:
         Recursively analyze an extracted file with all available tools.
         Returns (flags, interesting_strings) lists.
 
-        Bug fixes applied here:
+        Defenses:
         1. Skip tool-generated artifact files (foremost audit.txt, etc.)
-        2. For plain-text files, perform a lightweight content scan only
-           (avoids spawning foremost/binwalk on .txt files, which causes
-           foremost to regenerate audit.txt with fresh timestamps, breaking
-           the SHA-256 dedup and creating infinite recursion).
+        2. For plain-text files, perform a lightweight content scan only.
+        3. RecursionError is caught so a corrupt/adversarial deeply-nested
+           archive cannot crash the entire process.
         """
         if depth is None:
             depth = self._depth + 1
@@ -256,9 +267,6 @@ class CTFuck:
         ext = fp.suffix.lower()
 
         # ── Lightweight path for plain-text files ──────────────────────────
-        # Running binwalk/foremost on .txt files causes foremost to write a
-        # new audit.txt (with fresh timestamps → new SHA-256 → not deduped)
-        # on every recursion level, producing an infinite loop.
         if ext in _TEXT_EXTENSIONS:
             flags = []
             interesting = []
@@ -281,18 +289,25 @@ class CTFuck:
         # ── Full recursive analysis for binary / image / archive files ─────
         console.print(f"[dim]{indent}↳ Recursing into: [bold]{fp.name}[/bold] (depth {depth})[/dim]")
 
-        sub = CTFuck(
-            file_path=str(fp),
-            flag_format=self.flag_format,
-            wordlist=self._wordlist_path,
-            auto_brute=self.auto_brute,
-            max_recursion_depth=self._max_depth,
-            _depth=depth,
-            _visited=self._visited,
-        )
-        sub.scan()
-
-        return sub.found_flags, sub.interesting_strings
+        try:
+            sub = CTFuck(
+                file_path=str(fp),
+                flag_format=self.flag_format,
+                wordlist=self._wordlist_path,
+                auto_brute=self.auto_brute,
+                max_recursion_depth=self._max_depth,
+                _depth=depth,
+                _visited=self._visited,
+            )
+            sub.scan()
+            return sub.found_flags, sub.interesting_strings
+        except RecursionError:
+            console.print(
+                f"[yellow]  ⚠ Recursion limit hit analysing {fp.name} — skipping deeper layers[/yellow]"
+            )
+            return [], []
+        except Exception:
+            return [], []
 
     # ------------------------------------------------------------------
     # Banner / status
@@ -1011,9 +1026,28 @@ class CTFuck:
             self._bruteforce_zip()
 
     def _bruteforce_zip(self):
-        """Bruteforce ZIP file passwords."""
+        """Bruteforce ZIP file passwords with zip-bomb protection."""
         try:
             with zipfile.ZipFile(self.file_path, 'r') as zf:
+                # ── Zip-bomb guard ──────────────────────────────────────
+                # A zip bomb has a tiny compressed size but expands to GBs.
+                # We check both the total uncompressed size and the ratio.
+                total_compressed   = sum(i.compress_size   for i in zf.infolist())
+                total_uncompressed = sum(i.file_size        for i in zf.infolist())
+                if total_uncompressed > _ZIP_BOMB_MAX_BYTES:
+                    console.print(
+                        f"[red]\u26a0 ZIP skipped: uncompressed size "
+                        f"({total_uncompressed // (1024*1024)} MB) exceeds "
+                        f"{_ZIP_BOMB_MAX_BYTES // (1024*1024)} MB limit (zip bomb?)[/red]"
+                    )
+                    return
+                if total_compressed > 0 and (total_uncompressed / total_compressed) > _ZIP_BOMB_RATIO:
+                    console.print(
+                        f"[red]\u26a0 ZIP skipped: compression ratio "
+                        f"{total_uncompressed // total_compressed}x exceeds "
+                        f"{_ZIP_BOMB_RATIO}x limit (zip bomb?)[/red]"
+                    )
+                    return
                 for info in zf.infolist():
                     if info.flag_bits & 0x1:  # Password protected
                         console.print(
@@ -1214,6 +1248,22 @@ Examples:
     )
 
     args = parser.parse_args()
+
+    # ── Validate / clamp --depth ─────────────────────────────────────
+    # Each recursion level adds ~15-20 Python frames. The CPython default
+    # call-stack limit is 1000, so values much above 10 would cause a
+    # RecursionError — which is caught inside _analyze_file, but it's
+    # cleaner to reject nonsense values upfront.
+    if args.depth < 1:
+        args.depth = 1
+        console.print("[yellow]⚠ --depth must be ≥ 1, clamped to 1[/yellow]")
+    elif args.depth > _MAX_RECURSION_DEPTH_HARD_CAP:
+        console.print(
+            f"[yellow]⚠ --depth {args.depth} exceeds hard cap {_MAX_RECURSION_DEPTH_HARD_CAP}. "
+            f"Clamped to {_MAX_RECURSION_DEPTH_HARD_CAP}.  "
+            f"(Legitimate nested-stego CTFs never need more than 5-6 levels.)[/yellow]"
+        )
+        args.depth = _MAX_RECURSION_DEPTH_HARD_CAP
 
     try:
         ctfuck = CTFuck(
