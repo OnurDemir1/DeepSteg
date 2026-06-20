@@ -46,9 +46,9 @@ _ZIP_BOMB_RATIO = 100          # 100x compression ratio threshold
 _ZIP_BOMB_MAX_BYTES = 200 * 1024 * 1024  # never extract more than 200 MB total
 
 DEFAULT_FLAG_FORMATS = [
-    "SiberVatan{", "CTF{", "FLAG{", "flag{", "ctf{", "picoCTF{", "DUCTF{", 
-    "HTB{", "THM{", "CSAW{", "DarkCTF{", "RITSEC{", "TUCTF{", "nactf{", 
-    "zer0pts{", "BCACTF{", "DCTF{", "wectf{", "zh3r0{", "justCTF{", 
+    "STMCTF{", "SiberVatan{", "CTF{", "FLAG{", "flag{", "ctf{", "picoCTF{", "DUCTF{",
+    "HTB{", "THM{", "CSAW{", "DarkCTF{", "RITSEC{", "TUCTF{", "nactf{",
+    "zer0pts{", "BCACTF{", "DCTF{", "wectf{", "zh3r0{", "justCTF{",
     "X-MAS{", "cybrics{", "SquareCTF{", "WPICTF{", "BYUCTF{"
 ]
 
