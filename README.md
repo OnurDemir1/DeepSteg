@@ -10,7 +10,7 @@ cd DeepSteg
 sudo ./install.sh
 ```
 
-This scripts installs Python dependencies, missing tools (strings, exiftool, binwalk, steghide, outguess, foremost, zsteg), and adds a global `ctfuck` command.
+This scripts installs Python dependencies, missing tools (strings, exiftool, binwalk, steghide, outguess, foremost, zsteg), and adds a global `deepsteg` command.
 
 ## Usage
 
@@ -18,7 +18,7 @@ This scripts installs Python dependencies, missing tools (strings, exiftool, bin
 deepsteg <file>
 ```
 
-By default, CTFuck uses its **Smart Auto Scan** mode. It searches for 25 common CTF flag formats (like `SiberVatan{`, `CTF{`, `FLAG{`) simultaneously and runs in an escalating, interactive loop:
+By default, DeepSteg uses its **Smart Auto Scan** mode. It searches for 25 common CTF flag formats (like `SiberVatan{`, `CTF{`, `FLAG{`) simultaneously and runs in an escalating, interactive loop:
 
 1. **Fast Analysis:** Runs lightweight tools (`strings`, `zsteg`, `exiftool`, `binwalk`). If a flag is found, it pauses and asks if you want to continue deeper.
 2. **Auto Brute-Force:** Runs `steghide` and `outguess` using a built-in list of ~150 common stego passwords.
@@ -41,7 +41,7 @@ deepsteg <file> -f "CUSTOM{" -w rockyou.txt -d 5
 
 Runs and orchestrates standard tools against the target.
 - Tools: `strings`, `zsteg`, `exiftool`, `binwalk`, `steghide`, `outguess`, `foremost`.
-- Extracts files recursively into `ctfuck_output_<file>/` and re-analyzes them (nested stego support).
+- Extracts files recursively into `deepsteg_output_<file>/` and re-analyzes them (nested stego support).
 - Defends against infinite loops (via SHA-256 caching) and zip-bombs.
 
 ## Disclaimer

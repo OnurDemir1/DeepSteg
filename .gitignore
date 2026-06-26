@@ -25,8 +25,8 @@ venv/
 ENV/
 env/
 
-# CTFuck Output
-ctfuck_output_*/
+# DeepSteg Output
+deepsteg_output_*/
 
 # IDE
 .vscode/

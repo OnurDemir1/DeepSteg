@@ -174,7 +174,7 @@ class DeepSteg:
     def _persist_extracted_files(self, source_dir, tool_name):
         # Bug fix: sub-analyzers (depth > 0) operate inside temp directories
         # that are deleted after the call, so persisting is pointless and
-        # produces paths like /tmp/tmpXXX/ctfuck_output_... that vanish.
+        # produces paths like /tmp/tmpXXX/deepsteg_output_... that vanish.
         if self._depth > 0:
             return None
 
