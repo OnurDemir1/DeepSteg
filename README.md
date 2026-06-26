@@ -1,12 +1,12 @@
-# CTFuck
+# DeepSteg
 
 Steganography automation CLI for CTF challenges.
 
 ## Installation
 
 ```bash
-git clone https://github.com/OnurDemir1/CTFuck.git
-cd CTFuck
+git clone https://github.com/OnurDemir1/DeepSteg.git
+cd DeepSteg
 sudo ./install.sh
 ```
 
@@ -15,7 +15,7 @@ This scripts installs Python dependencies, missing tools (strings, exiftool, bin
 ## Usage
 
 ```bash
-ctfuck <file>
+deepsteg <file>
 ```
 
 By default, CTFuck uses its **Smart Auto Scan** mode. It searches for 25 common CTF flag formats (like `SiberVatan{`, `CTF{`, `FLAG{`) simultaneously and runs in an escalating, interactive loop:
@@ -29,7 +29,7 @@ By default, CTFuck uses its **Smart Auto Scan** mode. It searches for 25 common 
 If you want to customize the behavior:
 
 ```bash
-ctfuck <file> -f "CUSTOM{" -w rockyou.txt -d 5
+deepsteg <file> -f "CUSTOM{" -w rockyou.txt -d 5
 ```
 
 - `-f, --flag-format` — Search for a specific flag prefix only

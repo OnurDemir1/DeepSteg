@@ -34,7 +34,7 @@ _TEXT_EXTENSIONS = {
 }
 
 # Hard cap on recursion depth. Values above this are clamped and warned.
-# Rationale: each depth level adds ~15-20 Python frames (CTFuck.__init__,
+# Rationale: each depth level adds ~15-20 Python frames (DeepSteg.__init__,
 # scan, run_binwalk, _analyze_file …). At depth 50 we're already well
 # inside the default CPython stack limit (1000 frames). Practically,
 # legitimate nested-stego CTF challenges never need more than 5-6 levels.
@@ -54,7 +54,7 @@ DEFAULT_FLAG_FORMATS = [
 
 console = Console()
 
-BANNER = "CTFuck - Steganography Automation Tool"
+BANNER = "DeepSteg - Steganography Automation Tool"
 
 # ---------------------------------------------------------------------------
 # Default embedded wordlist (~150 most common CTF/stego passwords)
@@ -120,7 +120,7 @@ class ToolChecker:
         return status
 
 
-class CTFuck:
+class DeepSteg:
     def __init__(self, file_path, flag_formats, wordlist=None, auto_brute=False,
                  max_recursion_depth=3, _depth=0, _visited=None, quiet=False):
         self.file_path = Path(file_path)
@@ -169,7 +169,7 @@ class CTFuck:
             return str(path)
 
     def _get_output_root(self):
-        return self.file_path.parent / f"ctfuck_output_{self.file_path.stem}"
+        return self.file_path.parent / f"deepsteg_output_{self.file_path.stem}"
 
     def _persist_extracted_files(self, source_dir, tool_name):
         # Bug fix: sub-analyzers (depth > 0) operate inside temp directories
@@ -302,7 +302,7 @@ class CTFuck:
         console.print(f"[dim]{indent}↳ Recursing into: [bold]{fp.name}[/bold] (depth {depth})[/dim]")
 
         try:
-            sub = CTFuck(
+            sub = DeepSteg(
                 file_path=str(fp),
                 flag_formats=self.flag_formats,
                 wordlist=self._wordlist_path,
@@ -1240,14 +1240,14 @@ class CTFuck:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='CTFuck - Steganography Automation Tool for CTF',
+        description='DeepSteg - Steganography Automation Tool for CTF',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  ctfuck image.png  -f "FLAG{"
-  ctfuck image.jpg  -f "CTF{"  -w /usr/share/wordlists/rockyou.txt
-  ctfuck image.jpg  -f "CTF{"  -b
-  ctfuck archive.zip -f "flag{"
+  deepsteg image.png  -f "FLAG{"
+  deepsteg image.jpg  -f "CTF{"  -w /usr/share/wordlists/rockyou.txt
+  deepsteg image.jpg  -f "CTF{"  -b
+  deepsteg archive.zip -f "flag{"
         """
     )
 
@@ -1293,14 +1293,14 @@ Examples:
     enable_brute = True if (not args.flag_format and not args.wordlist) else args.auto_brute
     
     try:
-        ctfuck = CTFuck(
+        deepsteg = DeepSteg(
             file_path=args.file,
             flag_formats=formats,
             wordlist=args.wordlist,
             auto_brute=enable_brute,
             max_recursion_depth=args.depth,
         )
-        ctfuck.run()
+        deepsteg.run()
 
     except KeyboardInterrupt:
         console.print("\n[bold red]✗ Interrupted[/bold red]")
